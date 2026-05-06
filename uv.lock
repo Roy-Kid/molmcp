@@ -10,6 +10,7 @@ members = [
     "molmcp-molexp",
     "molmcp-molpack",
     "molmcp-molpy",
+    "molmcp-molrs",
 ]
 
 [[package]]
@@ -825,16 +826,14 @@ wheels = [
 
 [[package]]
 name = "molcrafts-molrs"
-version = "0.0.7"
-source = { registry = "https://pypi.org/simple" }
+version = "0.0.8"
+source = { editable = "../molrs/molrs-python" }
 dependencies = [
     { name = "numpy" },
 ]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/a1/5d00ca37440ad0c0f4bb5ecafaa4765c2869a8525399572da6abba3ebc24/molcrafts_molrs-0.0.7-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a889e723d7ecef6a84348cc7eee0611734fb4a186bb354457754c8d7171ed544", size = 3368833, upload-time = "2026-04-19T19:24:46.551Z" },
-    { url = "https://files.pythonhosted.org/packages/ac/97/67238e318eeebea1ee4383718213485a703dcbfe36ccec04e87396e0eaeb/molcrafts_molrs-0.0.7-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6c7e806bbc3db9f522e9e531436244c3471aa1992567445abbb0b23472f717ce", size = 3367593, upload-time = "2026-04-19T19:24:48.306Z" },
-    { url = "https://files.pythonhosted.org/packages/fa/1f/1375ecdb96700b81e94dcc8408082405f8233e8311b7757630554d5102d7/molcrafts_molrs-0.0.7-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:45d019a00347b31f368e2801b34e74a4b76ee6e20ed95ae8579701bd1edc1073", size = 3370621, upload-time = "2026-04-19T19:24:50.343Z" },
-]
+
+[package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=2.0" }]
 
 [[package]]
 name = "molexp"
@@ -982,6 +981,32 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=3.0" },
     { name = "molcrafts-molmcp", editable = "." },
     { name = "molcrafts-molpy" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
+name = "molmcp-molrs"
+version = "0.1.0"
+source = { editable = "packages/molmcp-molrs" }
+dependencies = [
+    { name = "fastmcp" },
+    { name = "molcrafts-molmcp" },
+    { name = "molcrafts-molrs" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastmcp", specifier = ">=3.0" },
+    { name = "molcrafts-molmcp", editable = "." },
+    { name = "molcrafts-molrs", editable = "../molrs/molrs-python" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
 ]

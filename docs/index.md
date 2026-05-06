@@ -41,7 +41,7 @@ pip install molcrafts-molmcp
 python -m molmcp --import-root molpy --name molpy
 ```
 
-That's enough — seven tools online over MCP stdio, ready to wire into Claude Code or any MCP client.
+That's enough — seven tools online over MCP stdio, ready to wire into Claude Code or any MCP client. For the one-line `claude mcp add` recipe and the curated plugin servers (`molmcp-molpy`, `molmcp-molrs`, `molmcp-molpack`), see [Deploy](get-started/deploy.md).
 
 When `molpack`, `molq`, or any other MolCrafts package wants to expose its own domain tools (pack a box, submit a job, run an experiment), it ships a Provider. See [Writing a Provider](guides/write-a-provider.md).
 

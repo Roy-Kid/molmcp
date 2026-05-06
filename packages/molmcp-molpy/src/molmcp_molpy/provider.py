@@ -1,4 +1,4 @@
-"""``molpy`` MCP provider — read-only structure-file inspector.
+"""``molpy`` MCP provider — read-only structure-file + compute-catalog inspector.
 
 The suite owns molpy's MCP integration. ``molpy`` itself ships **no**
 MCP code; installing ``molcrafts-mcp-suite`` is the supported path.
@@ -7,6 +7,11 @@ Tools (all read-only):
 
 * ``list_readers`` — enumerate the structure / trajectory readers
   ``molpy.io`` exposes, with file-extension hints.
+* ``list_compute_ops`` — enumerate ``molpy.compute`` operators
+  (``NeighborList``, ``RDF``, ``MCDCompute``, ``PMSDCompute``) with
+  constructor signatures and one-line summaries. ``NeighborList`` and
+  ``RDF`` are molrs-backed wrappers; ``MCDCompute`` / ``PMSDCompute``
+  are native molpy time-correlation analyses.
 * ``inspect_structure`` — open a single-frame structure file via
   ``molpy.io`` and return a summary (format, block names, atom/bond
   counts, metadata).
@@ -39,6 +44,54 @@ if TYPE_CHECKING:
 #
 # Keep this list small and biased toward the formats users actually
 # work with. Adding a new format is a single dict entry.
+_COMPUTE_OPS: dict[str, dict[str, object]] = {
+    "neighborlist": {
+        "class": "NeighborList",
+        "signature": "NeighborList(cutoff)",
+        "input": "frame: molpy.Frame (must have .box)",
+        "returns": "molrs.NeighborList (n_pairs, distances, indices)",
+        "summary": (
+            "Spatial neighbor pairs within ``cutoff`` Å. Backed by "
+            "molrs link-cell (O(N)). Single coord copy via Block "
+            "list-indexing; box passes through (molpy.Box IS-A "
+            "molrs.Box). Frame is not mutated."
+        ),
+    },
+    "rdf": {
+        "class": "RDF",
+        "signature": "RDF(n_bins, r_max, r_min=0.0)",
+        "input": "frames: Frame | list[Frame], neighbors: NeighborList | list[NeighborList]",
+        "returns": "molrs.RDFResult (rdf, bin_centers, bin_edges, n_frames)",
+        "summary": (
+            "Radial distribution function g(r). Aggregates pair "
+            "distances from a NeighborList per frame; eagerly "
+            "finalised. molrs-backed."
+        ),
+    },
+    "mcd": {
+        "class": "MCDCompute",
+        "signature": "MCDCompute(tags, max_dt, dt, center_of_mass=None)",
+        "input": "trajectory: molpy.Trajectory",
+        "returns": "MCDResult (correlations dict)",
+        "summary": (
+            "Mean Displacement Correlation for diffusion analysis. "
+            "Self (``\"3\"``) or distinct (``\"3,4\"``) tags. Native "
+            "molpy implementation."
+        ),
+    },
+    "pmsd": {
+        "class": "PMSDCompute",
+        "signature": "PMSDCompute(...)",
+        "input": "trajectory: molpy.Trajectory",
+        "returns": "PMSDResult",
+        "summary": (
+            "Polarization Mean Square Displacement for ionic systems. "
+            "Native molpy implementation."
+        ),
+    },
+}
+
+
 _READERS: dict[str, dict[str, object]] = {
     "lammps": {
         "reader": "LammpsDataReader",
@@ -126,6 +179,37 @@ class MolPyProvider:
         from mcp.types import ToolAnnotations
 
         ro = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+
+        @mcp.tool(annotations=ro)
+        def list_compute_ops() -> dict:
+            """List the molpy compute-operator catalog.
+
+            Returns:
+                Dict with ``ops`` (each entry has ``op``, ``class``,
+                ``signature``, ``input``, ``returns``, ``summary``)
+                and a ``guidance`` string.
+            """
+            return {
+                "ops": [
+                    {
+                        "op": key,
+                        "class": info["class"],
+                        "signature": info["signature"],
+                        "input": info["input"],
+                        "returns": info["returns"],
+                        "summary": info["summary"],
+                    }
+                    for key, info in _COMPUTE_OPS.items()
+                ],
+                "guidance": (
+                    "molpy.compute classes are callables: build with the "
+                    "constructor signature, then call on a Frame (or "
+                    "Trajectory for time-series ops). NeighborList and "
+                    "RDF return molrs result types directly — they are "
+                    "molpy-style API thin shells over molrs. MCD/PMSD "
+                    "are native molpy implementations."
+                ),
+            }
 
         @mcp.tool(annotations=ro)
         def list_readers() -> dict:

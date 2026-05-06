@@ -74,7 +74,13 @@ molmcp-molpy   = { workspace = true }
 molmcp-molexp  = { workspace = true }
 molmcp-lammps  = { workspace = true }
 molmcp-molpack = { workspace = true }
+molmcp-molrs   = { workspace = true }
 molmcp-gateway = { workspace = true }
+
+# Local path source for the unreleased molcrafts-molrs 0.0.8. Drop this
+# entry (and let pyproject's >=0.0.8 pin resolve from PyPI) once 0.0.8
+# is published.
+molcrafts-molrs = { path = "../molrs/molrs-python", editable = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]

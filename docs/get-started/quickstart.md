@@ -31,6 +31,8 @@ Behind the scenes Claude calls:
 - `mcp__molpy__list_modules`
 - `mcp__molpy__get_source`
 
+For the full local-stdio walkthrough — including the curated plugin servers (`molmcp-molpy`, `molmcp-molrs`, `molmcp-molpack`), verifying with `claude mcp list`, multi-server setup, and per-client wiring — see [Deploy](deploy.md).
+
 ## 3. The seven tools
 
 | Tool | What it does |

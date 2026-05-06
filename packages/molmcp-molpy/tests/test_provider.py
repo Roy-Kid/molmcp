@@ -61,10 +61,37 @@ def test_provider_implements_molmcp_protocol():
     assert provider.name == "molpy"
 
 
-def test_two_tools_registered():
+def test_three_tools_registered():
     server = _build_server()
     names = {t.name for t in _list_tools(server)}
-    assert names == {"list_readers", "inspect_structure"}
+    assert names == {"list_readers", "list_compute_ops", "inspect_structure"}
+
+
+def test_list_compute_ops_covers_known_operators():
+    server = _build_server()
+    fn = _get_tool(server, "list_compute_ops")
+    out = fn()
+    op_keys = {o["op"] for o in out["ops"]}
+    assert {"neighborlist", "rdf", "mcd", "pmsd"}.issubset(op_keys)
+    for entry in out["ops"]:
+        assert entry["class"]
+        assert entry["signature"]
+        assert entry["input"]
+        assert entry["returns"]
+        assert entry["summary"]
+
+
+def test_list_compute_ops_class_names_exist_on_molpy_compute():
+    """Every catalogued class name must actually live on molpy.compute."""
+    import molpy.compute as molpy_compute
+
+    server = _build_server()
+    out = _get_tool(server, "list_compute_ops")()
+    for entry in out["ops"]:
+        cls_name = entry["class"]
+        assert hasattr(molpy_compute, cls_name), (
+            f"catalog references molpy.compute.{cls_name} but it is not exported"
+        )
 
 
 def test_all_tools_have_read_only_annotation():
