@@ -20,13 +20,15 @@ def test_resolve_import_roots_uses_defaults() -> None:
 
 
 def test_resolve_import_roots_appends_extras_in_order() -> None:
-    args = _parse("--import-root", "molpack", "--import-root", "molq")
-    assert _resolve_import_roots(args) == DEFAULT_IMPORT_ROOTS + ("molpack", "molq")
+    # Use roots NOT in DEFAULT_IMPORT_ROOTS so we exercise pure appending.
+    args = _parse("--import-root", "molq", "--import-root", "molcfg")
+    assert _resolve_import_roots(args) == DEFAULT_IMPORT_ROOTS + ("molq", "molcfg")
 
 
 def test_resolve_import_roots_dedups_overlap_with_defaults() -> None:
-    args = _parse("--import-root", "molpy", "--import-root", "molpack")
-    assert _resolve_import_roots(args) == DEFAULT_IMPORT_ROOTS + ("molpack",)
+    # `molpy` is already a default; `molq` is not — dedup keeps order, drops dupe.
+    args = _parse("--import-root", "molpy", "--import-root", "molq")
+    assert _resolve_import_roots(args) == DEFAULT_IMPORT_ROOTS + ("molq",)
 
 
 def test_resolve_import_roots_skips_defaults_when_disabled() -> None:

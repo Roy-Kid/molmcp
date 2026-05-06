@@ -11,6 +11,7 @@ pytest.importorskip("fastmcp", reason="fastmcp not installed")
 pytest.importorskip("molmcp_molpy", reason="molmcp-molpy not installed")
 pytest.importorskip("molmcp_molexp", reason="molmcp-molexp not installed")
 pytest.importorskip("molmcp_lammps", reason="molmcp-lammps not installed")
+pytest.importorskip("molmcp_molpack", reason="molmcp-molpack not installed")
 
 
 def _list_tool_names(mcp) -> set[str]:
@@ -18,7 +19,7 @@ def _list_tool_names(mcp) -> set[str]:
     return {t.name for t in tools}
 
 
-def test_gateway_imports_with_three_namespaces():
+def test_gateway_imports_with_all_namespaces():
     from molmcp_gateway.config import PLUGIN_NAMESPACES
     from molmcp_gateway.server import mcp
 
@@ -36,12 +37,14 @@ def test_gateway_tool_count_matches_sum_of_plugins():
     from molmcp_gateway.server import mcp
     from molmcp_lammps.server import mcp as lammps_mcp
     from molmcp_molexp.server import mcp as molexp_mcp
+    from molmcp_molpack.server import mcp as molpack_mcp
     from molmcp_molpy.server import mcp as molpy_mcp
 
     plugin_total = (
         len(asyncio.run(molpy_mcp.list_tools()))
         + len(asyncio.run(molexp_mcp.list_tools()))
         + len(asyncio.run(lammps_mcp.list_tools()))
+        + len(asyncio.run(molpack_mcp.list_tools()))
     )
     gateway_total = len(asyncio.run(mcp.list_tools()))
     assert gateway_total == plugin_total, (

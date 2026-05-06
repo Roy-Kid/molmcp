@@ -2,7 +2,7 @@
 
 Optionally mounts an additional ``introspection`` namespace exposing
 molmcp's source-introspection tools for the configured ``--import-root``
-packages. Defaults to ``molpy`` and ``molexp``.
+packages. Defaults to ``molpy``, ``molexp``, and ``molpack``.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="molmcp-gateway",
         description=(
             "Run the MolCrafts MCP gateway server. Aggregates the "
-            "molpy, molexp, and lammps plugins behind one endpoint."
+            "molpy, molexp, lammps, and molpack plugins behind one endpoint."
         ),
     )
     parser.add_argument(
@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-default-import-roots",
         action="store_true",
-        help="Do not expose the default introspection roots: molpy, molexp.",
+        help="Do not expose the default introspection roots: molpy, molexp, molpack.",
     )
     parser.add_argument(
         "--no-introspection",

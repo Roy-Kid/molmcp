@@ -16,6 +16,7 @@ from fastmcp import FastMCP
 
 from molmcp_lammps.server import mcp as lammps_mcp
 from molmcp_molexp.server import mcp as molexp_mcp
+from molmcp_molpack.server import mcp as molpack_mcp
 from molmcp_molpy.server import mcp as molpy_mcp
 
 from molmcp_gateway.config import DEFAULT_NAME
@@ -24,3 +25,4 @@ mcp = FastMCP(DEFAULT_NAME)
 mcp.mount(molpy_mcp, namespace="molpy")
 mcp.mount(molexp_mcp, namespace="molexp")
 mcp.mount(lammps_mcp, namespace="lammps")
+mcp.mount(molpack_mcp, namespace="molpack")

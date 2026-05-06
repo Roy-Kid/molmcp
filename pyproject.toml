@@ -73,6 +73,7 @@ members = ["packages/*", "apps/*"]
 molmcp-molpy   = { workspace = true }
 molmcp-molexp  = { workspace = true }
 molmcp-lammps  = { workspace = true }
+molmcp-molpack = { workspace = true }
 molmcp-gateway = { workspace = true }
 
 [tool.pytest.ini_options]
