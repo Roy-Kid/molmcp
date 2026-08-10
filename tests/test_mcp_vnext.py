@@ -107,6 +107,14 @@ async def test_catalog_plane_lists_and_routes():
     # Pure function path matches tool
     assert route_task("submit a slurm job")["planes"][0]["plane"] == "molq"
 
+    # molhub / espaloma dataset phrasing → molcrafts (Python molhub SDK), not a molhub plane
+    hub_route = route_task("fetch espaloma dataset zinc-typing via molhub")
+    assert any(m["plane"] == "molcrafts" for m in hub_route["planes"])
+    reasons = " ".join(m.get("reason", "") for m in hub_route["planes"]).lower()
+    assert "molhub" in reasons and "python" in reasons
+    assert all(m["plane"] != "molhub" for m in hub_route["planes"])
+    assert "molhub" not in {p["id"] for p in (await call(catalog, "list_planes"))["planes"]}
+
 
 async def test_multi_provider_server_rejected():
     from fastmcp import FastMCP
