@@ -104,6 +104,20 @@ _ROUTE_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "molcrafts",
         "Discover package/module/symbol pages before writing code.",
     ),
+    (
+        (
+            "molhub",
+            "espaloma dataset",
+            "dataset:espaloma",
+            "fetch dataset",
+            "zinc-typing",
+            "phalkethoh",
+        ),
+        "molcrafts",
+        "Use the Python molhub SDK for dataset coordinates/fetch; "
+        "use molexp for the mm-param-learning validation workspace "
+        "(no dedicated molhub MCP plane).",
+    ),
 )
 
 
