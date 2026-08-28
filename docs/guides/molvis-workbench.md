@@ -12,10 +12,13 @@ Two wills act on one session and neither blocks the other. The human's "change *
 
 ## The loop
 
-Connect the **molvis** plane (`molmcp serve molvis`). Tool ids are
-`molvis__open`, `molvis__exec`, … (server name + bare tool).
+Default `molmcp serve` mounts molvis onto the molcrafts core. Tool ids are
+`molvis_open`, `molvis_exec`, `molvis_poll_events` (FastMCP namespace).
+A debug `molmcp serve molvis` process still uses bare `open` / `exec`.
 
-`open` → `exec` (build and draw) → the human looks and clicks → `poll_events` → `exec` (read the selection, edit, redraw) → `close`.
+`molvis_open` → `molvis_exec` (build and draw) → the human looks and clicks →
+`molvis_poll_events` → `molvis_exec` (read the selection, edit, redraw) →
+`molvis_close`.
 
 Step one, once `open` has returned and the user has the viewer open in a browser: build the molecule and put it on the canvas. `stage` is already bound in the namespace; nothing else is imported for you.
 

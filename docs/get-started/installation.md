@@ -18,16 +18,16 @@ uv add --prerelease=allow molcrafts-molmcp
 !!! note "Why the flag"
 
     molmcp requires **FastMCP 4** for MCP 2026-07-28, and FastMCP 4 is still
-    in beta — PyPI's 4.x line is `4.0.0b2` with no final release yet. pip
+    in beta — PyPI's 4.x line is `4.0.0b5` with no final release yet. pip
     installs it without ceremony, but uv does not enable pre-releases for a
     dependency of a dependency, so it reports:
 
     ```
-    Because only fastmcp<4.0.0b1 is available and molcrafts-molmcp
-    depends on fastmcp>=4.0.0b1 ... cannot be used.
+    Because only fastmcp<4.0.0b5 is available and molcrafts-molmcp
+    depends on fastmcp>=4.0.0b5 ... cannot be used.
     ```
 
-    Pinning an exact `==4.0.0b2` does not help — uv refuses that for the same
+    Pinning an exact beta does not help — uv refuses that for the same
     reason. FastMCP 3.x is not an alternative: it speaks the older protocol,
     and molmcp's planes are built on the new one.
 
@@ -129,6 +129,6 @@ was.
 
 ## Next steps
 
-- **[Quickstart](quickstart.md)** — serve catalog + molcrafts and wire a client
-- **[Architecture](../concepts/architecture.md)** — one plane per connection
-- **[Deploy](deploy.md)** — multi-link stdio layout for Claude Code
+- **[Quickstart](quickstart.md)** — `molmcp serve` and `molmcp init`
+- **[Architecture](../concepts/architecture.md)** — FastMCP composition
+- **[Deploy](deploy.md)** — local stdio for Claude Code

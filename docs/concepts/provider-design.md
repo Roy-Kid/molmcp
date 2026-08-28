@@ -1,8 +1,10 @@
 # Provider design contract
 
 molmcp is **not** a tool-registration mirror of upstream packages, and it
-is **not** a single mega-server. Each provider is its own MCP plane
-(`molmcp serve <name>`); clients connect planes on demand.
+is **not** a hand-curated mirror of upstream APIs. `molmcp serve` is the
+molcrafts core with providers FastMCP-mounted; `molmcp init <host>
+--disable <name>` omits a mount. Each provider still registers as its own
+focused FastMCP (`create_plane("molq")`) for tests and debug serve.
 
 The primary mechanism for an agent to use a MolCrafts package is the
 [discovery engine](discovery.md) on the **molcrafts** plane: query the

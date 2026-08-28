@@ -1,21 +1,12 @@
 """MCP planes — one product domain per MCP server process.
 
-Each plane is an independent MCP server identity. Client configs default to
-**all planes enabled**; operators toggle with ``--enable`` / ``--disable``.
-There is no mega-server that mounts every provider under one ``molmcp`` name.
+``molcrafts`` is the **core** connection: knowledge pages plus
+``list_planes`` / ``route``. It is always on and cannot be disabled.
+Provider planes (``molvis`` / ``molq`` / ``molexp`` / …) are optional
+MCP links from the ``molmcp.providers`` entry-point group.
 
-Planes
-------
-catalog
-    Bootstrap only. Lists available planes and routes a task string to which
-    plane(s) to connect. No science, no discovery index.
-molcrafts
-    Knowledge plane: packages / outline / open / search / compose / suggest.
-    Science APIs are discovered here and invoked elsewhere (e.g. molvis exec).
-molvis / molq / molexp / …
-    Stateful provider planes from ``molmcp.providers`` entry points. Each
-    process hosts exactly one provider's tools, with bare tool names
-    (client sees ``molvis__open``, not ``molmcp__molvis_open``).
+There is no catalog plane. Default ``molmcp serve`` is the molcrafts core
+with enabled providers FastMCP-mounted (namespaced tools).
 """
 
 from __future__ import annotations
@@ -25,11 +16,18 @@ from typing import Any
 
 from .provider import discover_providers
 
-#: Built-in planes that are not entry-point providers.
-BUILTIN_PLANE_IDS = frozenset({"catalog", "molcrafts"})
+#: Always-on knowledge + routing connection. Not a disableable plane.
+CORE_PLANE_ID = "molcrafts"
 
-#: Intent routing table for the catalog ``route`` tool.
+#: Built-in ids that are not entry-point providers.
+BUILTIN_PLANE_IDS = frozenset({CORE_PLANE_ID})
+
+#: Retired plane id. Kept out of catalogs; serving it fails loudly.
+GONE_PLANE_IDS = frozenset({"catalog"})
+
+#: Intent routing table for the ``route`` tool.
 #: Patterns are lowercase substrings matched against the task string.
+#: Only **provider** planes appear here — the core is already connected.
 _ROUTE_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (
         (
@@ -87,37 +85,36 @@ _ROUTE_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "molexp",
         "Experiment workspace layout, scaffold, and legacy-directory adoption.",
     ),
-    (
-        (
-            "api",
-            "symbol",
-            "docstring",
-            "import",
-            "how to",
-            "search code",
-            "package",
-            "查",
-            "文档",
-            "符号",
-            "接口",
-        ),
-        "molcrafts",
-        "Discover package/module/symbol pages before writing code.",
-    ),
 )
+
+
+def gone_plane_message(plane_id: str) -> str:
+    """Loud error when a retired plane id is used."""
+    if plane_id == "catalog":
+        return (
+            "catalog is not a plane; list_planes and route live on molcrafts. "
+            "Use `molmcp serve molcrafts`."
+        )
+    return f"{plane_id!r} is not a plane"
+
+
+def core_disable_message() -> str:
+    """Loud error when the caller tries to disable the core connection."""
+    return "molcrafts is the core connection and cannot be disabled"
 
 
 @dataclass(frozen=True, slots=True)
 class PlaneInfo:
-    """Public description of one connectable MCP plane."""
+    """Public description of one connectable MCP server."""
 
     id: str
-    kind: str  # "builtin" | "provider"
+    kind: str  # "core" | "provider"
     purpose: str
     when_to_connect: str
     serve_command: str
     requires_config: bool
     tools_hint: tuple[str, ...]
+    disableable: bool
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,35 +125,27 @@ class PlaneInfo:
             "serve_command": self.serve_command,
             "requires_config": self.requires_config,
             "tools_hint": list(self.tools_hint),
+            "disableable": self.disableable,
         }
-
-
-def _catalog_info() -> PlaneInfo:
-    return PlaneInfo(
-        id="catalog",
-        kind="builtin",
-        purpose="List planes and route a task to which MCP connection(s) to open.",
-        when_to_connect=(
-            "Bootstrap routing; safe to leave enabled with everything else."
-        ),
-        serve_command="molmcp serve catalog",
-        requires_config=False,
-        tools_hint=("list_planes", "route"),
-    )
 
 
 def _molcrafts_info() -> PlaneInfo:
     return PlaneInfo(
-        id="molcrafts",
-        kind="builtin",
-        purpose="Inject knowledge pages (packages → outline → open → compose).",
-        when_to_connect=(
-            "Before writing science code: discover real symbols and examples. "
-            "Never invent APIs; miss means SYMBOL_NOT_FOUND."
+        id=CORE_PLANE_ID,
+        kind="core",
+        purpose=(
+            "Always-on knowledge pages (packages → outline → open → compose) "
+            "plus list_planes / route for optional provider planes."
         ),
-        serve_command="molmcp serve molcrafts",
+        when_to_connect=(
+            "Core connection — always on. Discover real symbols before writing "
+            "code. Never invent APIs; miss means SYMBOL_NOT_FOUND."
+        ),
+        serve_command="molmcp serve",
         requires_config=True,
         tools_hint=(
+            "list_planes",
+            "route",
             "info",
             "packages",
             "outline",
@@ -165,6 +154,7 @@ def _molcrafts_info() -> PlaneInfo:
             "search",
             "suggest",
         ),
+        disableable=False,
     )
 
 
@@ -213,13 +203,13 @@ _PROVIDER_META: dict[str, tuple[str, str, tuple[str, ...]]] = {
 
 
 def list_plane_infos(*, include_unavailable_providers: bool = False) -> list[PlaneInfo]:
-    """Return planes this install can serve (catalog first).
+    """Return the core connection plus provider planes this install can serve.
 
     By default only providers whose optional upstream package is installed
     appear (**silent omit** of missing science deps — not a test skip).
     Pass ``include_unavailable_providers=True`` for diagnostics.
     """
-    planes: list[PlaneInfo] = [_catalog_info(), _molcrafts_info()]
+    planes: list[PlaneInfo] = [_molcrafts_info()]
     available = {p.name: p for p in discover_providers(only_available=True)}
     if include_unavailable_providers:
         loaded = {p.name: p for p in discover_providers(only_available=False)}
@@ -248,6 +238,7 @@ def list_plane_infos(*, include_unavailable_providers: bool = False) -> list[Pla
                 serve_command=f"molmcp serve {name}",
                 requires_config=False,
                 tools_hint=tools,
+                disableable=True,
             )
         )
     return planes
@@ -267,8 +258,9 @@ def known_plane_ids(*, only_available: bool = False) -> frozenset[str]:
 
 
 def route_task(task: str) -> dict[str, Any]:
-    """Map a free-text task to plane ids the client should connect.
+    """Map a free-text task to optional provider planes to connect.
 
+    ``molcrafts`` is the core and is never returned as a plane to add.
     Returns a structured routing answer — never executes science.
     """
     text = task.strip().lower()
@@ -278,40 +270,30 @@ def route_task(task: str) -> dict[str, Any]:
         if any(k in text for k in keywords) and plane_id not in seen:
             seen.add(plane_id)
             matched.append({"plane": plane_id, "reason": reason})
-    # Default: knowledge first when nothing matched hard.
-    if not matched:
-        matched.append(
-            {
-                "plane": "molcrafts",
-                "reason": "No strong product signal; discover APIs before coding.",
-            }
-        )
-    # Drawing almost always needs molcrafts for API truth + molvis for canvas.
-    plane_ids = [m["plane"] for m in matched]
-    if "molvis" in plane_ids and "molcrafts" not in plane_ids:
-        matched.append(
-            {
-                "plane": "molcrafts",
-                "reason": "Look up molpy/molvis symbols before writing exec code.",
-            }
-        )
     return {
         "ok": True,
         "task": task,
+        "core": CORE_PLANE_ID,
         "planes": matched,
-        "serve_commands": [f"molmcp serve {m['plane']}" for m in matched],
+        "namespaces": [m["plane"] for m in matched],
+        "serve_commands": ["molmcp serve"],
         "client_hint": (
-            "Default client installs every plane; use "
-            "`molmcp client grok --disable …` to drop ones you do not want. "
-            "Science APIs are never MCP tools — discover them on the "
-            "molcrafts plane, then call them inside molvis exec (or agent Python)."
+            "Default `molmcp serve` already mounts these providers onto "
+            "molcrafts (molvis_open, molq_list_jobs, …). Omit a mount with "
+            "`molmcp init grok --disable …`. Science APIs are never MCP "
+            "tools — discover them on molcrafts, then call them in agent "
+            "Python or molvis_exec."
         ),
     }
 
 
 __all__ = [
     "BUILTIN_PLANE_IDS",
+    "CORE_PLANE_ID",
+    "GONE_PLANE_IDS",
     "PlaneInfo",
+    "core_disable_message",
+    "gone_plane_message",
     "known_plane_ids",
     "list_plane_infos",
     "route_task",

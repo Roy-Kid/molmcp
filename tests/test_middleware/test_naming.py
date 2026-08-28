@@ -67,9 +67,7 @@ def test_validate_detects_double_substring():
         assert_plane_tool_names(mcp, "molexp")
 
 
-def test_builtin_planes_pass_naming():
-    create_plane("catalog")
-    # molcrafts with empty collection
+def test_core_plane_passes_naming():
     from molmcp import CollectionIndex
 
     create_plane(

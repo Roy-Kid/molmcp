@@ -1,4 +1,4 @@
-"""MolMCP — multi-plane MCP for MolCrafts (one product per connection)."""
+"""MolMCP — molcrafts core with FastMCP-mounted provider planes."""
 
 from __future__ import annotations
 
@@ -8,19 +8,26 @@ from .client_config import PlaneToggle, resolve_plane_toggles
 from .collection import CollectionIndex, ContextPack, SearchHit, SourceBinding
 from .config import AppConfig, ConfigurationError, load_config
 from .mcp_provider import MolCraftsContextProvider
-from .planes import PlaneInfo, known_plane_ids, list_plane_infos, route_task
+from .planes import (
+    CORE_PLANE_ID,
+    PlaneInfo,
+    known_plane_ids,
+    list_plane_infos,
+    route_task,
+)
 from .provider import (
     PROVIDER_ENTRY_POINT_GROUP,
     Provider,
     discover_providers,
     provider_available,
 )
-from .server import create_plane, create_server
+from .server import create_plane, create_server, create_stack
 
 __version__ = importlib.metadata.version("molcrafts-molmcp")
 
 __all__ = [
     "AppConfig",
+    "CORE_PLANE_ID",
     "CollectionIndex",
     "ConfigurationError",
     "ContextPack",
@@ -34,6 +41,7 @@ __all__ = [
     "__version__",
     "create_plane",
     "create_server",
+    "create_stack",
     "discover_providers",
     "known_plane_ids",
     "list_plane_infos",

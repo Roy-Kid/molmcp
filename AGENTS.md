@@ -30,13 +30,14 @@ mol_project:
 
 ## What this repo is
 
-molmcp is multi-plane MCP for MolCrafts: **one product domain per MCP
-connection** (`molmcp serve <plane>`). Planes include `catalog`,
-`molcrafts` (knowledge/discovery), `molvis`, `molq`, `molexp`. Science
-APIs are discovered via the knowledge plane and never mirrored as MCP
-tools. Pure Python (>= 3.12), `src/` layout, managed with uv.
+molmcp is FastMCP-composed MCP for MolCrafts: **`molmcp serve`** starts the
+molcrafts core (knowledge plus `list_planes` / `route`) and mounts enabled
+providers with official namespaces (`molvis_open`). `molmcp init <host>`
+installs the usage skill and one MCP entry. Science APIs are discovered
+via the core and never mirrored as MCP tools. Pure Python (>= 3.12),
+`src/` layout, managed with uv.
 
-**Protocol:** MCP **2026-07-28** via FastMCP **4.0.0b1** + MCP Python SDK
+**Protocol:** MCP **2026-07-28** via FastMCP **4.0.0b5** + MCP Python SDK
 v2 (`mcp>=2`). Do not pin FastMCP back to 3.x without an explicit decision.
 
 ## Where things live
@@ -81,10 +82,10 @@ For non-trivial work, prefer:
 
 Layered; dependencies point inward only:
 
-1. `cli.py` / `__main__.py` → `server.create_plane(plane)` → one plane
-   only (`planes.py` catalog + molcrafts knowledge + one provider).
-2. Multi-link on-demand: clients connect separate MCP servers
-   (`catalog`, `molcrafts`, `molvis`, …). No mega-mount.
+1. `cli.py` / `__main__.py` → `create_stack()` (default `molmcp serve`)
+   or `create_plane(plane)` for a focused debug process.
+2. FastMCP composition: molcrafts core mounts providers with namespaces
+   (`molvis_open`). `molmcp init <host> --disable` omits a mount.
 3. Providers (`providers/`) import MCP machinery; science packages stay
    lazy optional. Bare tool names; server name is the plane id.
 4. `discovery/` is itself layered:

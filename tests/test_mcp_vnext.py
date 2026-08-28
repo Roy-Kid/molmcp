@@ -10,6 +10,8 @@ from molmcp import create_plane
 from molmcp.planes import route_task
 
 _CORE_TOOLS = {
+    "list_planes",
+    "route",
     "info",
     "packages",
     "outline",
@@ -91,21 +93,39 @@ async def test_info_and_resources(server):
     _ = quote
 
 
-async def test_catalog_plane_lists_and_routes():
-    catalog = create_plane("catalog")
-    tools = await catalog.list_tools()
-    names = {t.name for t in tools}
-    assert names == {"list_planes", "route"}
-
-    planes = await call(catalog, "list_planes")
+async def test_core_lists_and_routes(server):
+    planes = await call(server, "list_planes")
     assert planes["ok"] is True
+    assert planes["core"] == "molcrafts"
     ids = {p["id"] for p in planes["planes"]}
-    assert "catalog" in ids and "molcrafts" in ids
+    assert "molcrafts" in ids
+    assert "catalog" not in ids
+    core = next(p for p in planes["planes"] if p["id"] == "molcrafts")
+    assert core["kind"] == "core"
+    assert core["disableable"] is False
 
-    routed = await call(catalog, "route", {"task": "draw dopamine in the viewer"})
+    routed = await call(server, "route", {"task": "draw dopamine in the viewer"})
     assert any(m["plane"] == "molvis" for m in routed["planes"])
-    # Pure function path matches tool
+    assert routed["core"] == "molcrafts"
+    assert all(m["plane"] != "molcrafts" for m in routed["planes"])
     assert route_task("submit a slurm job")["planes"][0]["plane"] == "molq"
+
+
+def test_catalog_plane_is_gone():
+    import pytest
+
+    with pytest.raises(ValueError, match="catalog is not a plane"):
+        create_plane("catalog")
+
+
+def test_route_task_does_not_emit_core():
+    knowledge = route_task("how to import a symbol from the package docs")
+    assert knowledge["core"] == "molcrafts"
+    assert knowledge["planes"] == []
+    drawing = route_task("draw dopamine")
+    assert [m["plane"] for m in drawing["planes"]] == ["molvis"]
+    assert drawing["namespaces"] == ["molvis"]
+    assert drawing["serve_commands"] == ["molmcp serve"]
 
 
 async def test_multi_provider_server_rejected():
@@ -130,5 +150,5 @@ async def test_multi_provider_server_rejected():
 
     import pytest
 
-    with pytest.raises(ValueError, match="multi-provider"):
+    with pytest.raises(ValueError, match="create_stack"):
         create_plane("a", providers=[P1(), P2()], discover_entry_points=False)
