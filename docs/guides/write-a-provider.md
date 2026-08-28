@@ -196,7 +196,7 @@ plane also indexes it — its symbols are reachable through `molcrafts`
 To wire into a client:
 
 ```bash
-molmcp init grok         # usage skill + composed molmcp serve
+molmcp init grok         # managed skills + composed molmcp serve
 claude mcp add molpack -- molmcp serve molpack
 ```
 

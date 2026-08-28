@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, settings
-from .client_config import install_skill, render_init
+from .client_config import install_skills, render_init
 from .config import AppConfig, ConfigurationError, load_config
 from .planes import (
     CORE_PLANE_ID,
@@ -30,7 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="molmcp",
         description=(
             "MolCrafts MCP: `serve` runs the composed core; "
-            "`init <host>` wires the host and installs the usage skill."
+            "`init <host>` wires the host and installs managed skills."
         ),
     )
     parser.add_argument(
@@ -95,14 +95,14 @@ def _build_parser() -> argparse.ArgumentParser:
     init = commands.add_parser(
         "init",
         help=(
-            "Install the usage skill and MCP config for one host. "
-            "molcrafts cannot be disabled."
+            "Install managed skills (molcrafts, molexp-plan) and MCP "
+            "config for one host. molcrafts cannot be disabled."
         ),
     )
     init.add_argument(
         "host",
         choices=["grok", "claude", "cursor", "codex"],
-        help="Host to wire (user-level skill + MCP JSON).",
+        help="Host to wire (user-level skills + MCP JSON).",
     )
     init.add_argument(
         "--enable",
@@ -360,11 +360,12 @@ def _init(args: argparse.Namespace) -> int:
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-    skill_path = install_skill(args.host)
+    skill_paths = install_skills(args.host)
+    skill_lines = "\n".join(f"wrote {p}" for p in skill_paths)
     print(
         f"wrote {path}  enabled={list(toggle.enabled)}  "
         f"disabled={list(toggle.disabled)}\n"
-        f"wrote {skill_path}",
+        f"{skill_lines}",
         file=sys.stderr,
     )
     return 0

@@ -86,8 +86,11 @@ is the wrong place for a credential.
 
 ## `molmcp init <host>`
 
-Install the usage skill (user-level, overwritten) and the MCP JSON for one
-host. Host is required: `grok`, `claude`, `cursor`, `codex`.
+Install managed skills (user-level, overwritten) and the MCP JSON for one
+host. Host is required: `grok`, `claude`, `cursor`, `codex`. Skills:
+
+- `molcrafts` — API discovery constitution (always loaded)
+- `molexp-plan` — interactive experiment planner (`/molexp-plan`)
 
 ```bash
 molmcp init grok
@@ -138,7 +141,7 @@ molmcp index --force
 claude mcp add molcrafts -- molmcp serve
 ```
 
-Or generate the composed map and usage skill with `molmcp init grok`.
+Or generate the composed map and managed skills with `molmcp init grok`.
 
 See [Deploy](../get-started/deploy.md) for the full layout.
 

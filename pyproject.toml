@@ -83,7 +83,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "molmcp.discovery.store" = ["*.sql"]
-"molmcp.skill" = ["SKILL.md"]
+"molmcp.skill" = ["*/SKILL.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]

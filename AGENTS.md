@@ -33,7 +33,7 @@ mol_project:
 molmcp is FastMCP-composed MCP for MolCrafts: **`molmcp serve`** starts the
 molcrafts core (knowledge plus `list_planes` / `route`) and mounts enabled
 providers with official namespaces (`molvis_open`). `molmcp init <host>`
-installs the usage skill and one MCP entry. Science APIs are discovered
+installs managed skills (`molcrafts`, `molexp-plan`) and one MCP entry. Science APIs are discovered
 via the core and never mirrored as MCP tools. Pure Python (>= 3.12),
 `src/` layout, managed with uv.
 

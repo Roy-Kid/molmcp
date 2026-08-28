@@ -69,3 +69,8 @@ Then wait. The user may name another package — run `outline` / `open` on
 that source; do not skip discovery. Or they may ask to file an issue: use
 `gh` against **that science package's** tracker (not molmcp), body = the
 three lines. Do not add a workaround unless they explicitly ask.
+
+## Experiment planning
+
+Load **molexp-plan** (`/molexp-plan`) when the user wants to plan, design,
+or set up an experiment. This skill only covers API discovery.

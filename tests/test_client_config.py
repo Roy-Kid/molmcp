@@ -86,6 +86,13 @@ def test_cli_init_writes_json_and_skill(tmp_path, monkeypatch, capsys):
     skill = tmp_path / ".grok" / "skills" / "molcrafts" / "SKILL.md"
     assert skill.is_file()
     assert "SYMBOL_NOT_FOUND" in skill.read_text(encoding="utf-8")
+    plan = tmp_path / ".grok" / "skills" / "molexp-plan" / "SKILL.md"
+    assert plan.is_file()
+    plan_text = plan.read_text(encoding="utf-8")
+    assert "One step per turn" in plan_text
+    assert "No writes before confirm" in plan_text
+    assert "SYMBOL_NOT_FOUND" in plan_text
+    assert "molexp-plan" in err
 
 
 def test_cli_init_cannot_disable_core(capsys, monkeypatch, tmp_path):
@@ -143,6 +150,10 @@ class TestOneJsonForEveryHost:
     def test_each_host_has_a_skill_directory(self):
         for host in ("grok", "claude", "cursor", "codex"):
             assert client_config.default_skill_dir(host).name == "molcrafts"
+            assert (
+                client_config.default_skill_dir(host, "molexp-plan").name
+                == "molexp-plan"
+            )
 
 
 def test_skill_template_is_shipped():
@@ -152,3 +163,19 @@ def test_skill_template_is_shipped():
     assert "disable-model-invocation: false" in text
     assert "user-invocable: false" in text
     assert "when-to-use:" in text
+    assert "molexp-plan" in text
+
+
+def test_molexp_plan_template_is_shipped():
+    text = client_config.skill_template("molexp-plan")
+    assert "name: molexp-plan" in text
+    assert "user-invocable: true" in text
+    assert "One step per turn" in text
+    assert "No writes before confirm" in text
+    assert "SYMBOL_NOT_FOUND" in text
+    assert "/molexp-plan" in text
+
+
+def test_unknown_skill_raises():
+    with pytest.raises(ValueError, match="unknown skill"):
+        client_config.skill_template("not-a-skill")

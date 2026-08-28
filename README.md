@@ -12,14 +12,15 @@ behavior — not a test skip.
 
 **`molmcp serve`** (no plane) starts the **molcrafts core** and FastMCP-mounts
 enabled providers into that one process (`molvis_open`, `molq_list_jobs`, …).
-**`molmcp init <host>`** writes that one MCP entry and the usage skill.
+**`molmcp init <host>`** writes that one MCP entry and the managed skills
+(`molcrafts`, `molexp-plan`).
 `--disable molcrafts` errors; `--disable molq` omits that mount.
 
 | Command | Role |
 |---------|------|
 | `molmcp serve` | Composed core + provider mounts |
 | `molmcp serve molvis` | Debug: vis-only process, bare `open` |
-| `molmcp init grok` | User-level skill + MCP JSON |
+| `molmcp init grok` | User-level skills + MCP JSON |
 
 Science APIs are **never** MCP tools. Discover them on molcrafts (`packages` →
 `open`), then call them from agent Python or `molvis_exec`.
@@ -30,7 +31,7 @@ One standard `mcpServers` JSON, which every host reads — Claude Code and
 Cursor natively, Grok alongside its own `config.toml`.
 
 ```bash
-molmcp init grok                         # skill + composed serve
+molmcp init grok                         # skills + composed serve
 molmcp init grok --disable molq --disable molexp
 molmcp init grok --disable molq --enable molq   # re-enable after a disable
 molmcp init claude
@@ -84,7 +85,7 @@ to be started next to.
 
 ```bash
 uv run molmcp planes              # list planes
-uv run molmcp init grok           # skill + MCP config
+uv run molmcp init grok           # skills + MCP config
 uv run molmcp config list         # resolved settings
 uv run molmcp route "draw dopamine"
 uv run molmcp serve               # composed core + mounts

@@ -21,6 +21,7 @@ from .planes import (
 Host = Literal["grok", "claude", "cursor", "codex"]
 
 SKILL_NAME = "molcrafts"
+SHIPPED_SKILLS: tuple[str, ...] = ("molcrafts", "molexp-plan")
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,12 +186,12 @@ _HOST_PATHS: dict[str, tuple[str, ...]] = {
     "codex": (".codex", "mcp.json"),
 }
 
-#: User-level skill directory (under home) for the usage constitution.
-_HOST_SKILL_DIRS: dict[str, tuple[str, ...]] = {
-    "claude": (".claude", "skills", SKILL_NAME),
-    "cursor": (".cursor", "skills", SKILL_NAME),
-    "grok": (".grok", "skills", SKILL_NAME),
-    "codex": (".codex", "skills", SKILL_NAME),
+#: User-level ``skills/`` directory (under home). Each shipped skill is a child.
+_HOST_SKILL_ROOTS: dict[str, tuple[str, ...]] = {
+    "claude": (".claude", "skills"),
+    "cursor": (".cursor", "skills"),
+    "grok": (".grok", "skills"),
+    "codex": (".codex", "skills"),
 }
 
 
@@ -203,39 +204,50 @@ def default_write_path(host: Host) -> Path:
     return Path.home().joinpath(*_HOST_PATHS[host])
 
 
-def default_skill_dir(host: Host) -> Path:
+def default_skill_dir(host: Host, name: str = SKILL_NAME) -> Path:
     """User-level skill directory for *host* (``SKILL.md`` lives inside)."""
-    if host not in _HOST_SKILL_DIRS:
+    if host not in _HOST_SKILL_ROOTS:
         raise ValueError(
-            f"unknown host {host!r}; known: {', '.join(sorted(_HOST_SKILL_DIRS))}"
+            f"unknown host {host!r}; known: {', '.join(sorted(_HOST_SKILL_ROOTS))}"
         )
-    return Path.home().joinpath(*_HOST_SKILL_DIRS[host])
+    if name not in SHIPPED_SKILLS:
+        raise ValueError(f"unknown skill {name!r}; known: {', '.join(SHIPPED_SKILLS)}")
+    return Path.home().joinpath(*_HOST_SKILL_ROOTS[host], name)
 
 
-def skill_template() -> str:
-    """Usage constitution shipped with this molmcp version."""
+def skill_template(name: str = SKILL_NAME) -> str:
+    """Skill body shipped with this molmcp version."""
     from importlib.resources import files
 
-    return (files("molmcp.skill") / "SKILL.md").read_text(encoding="utf-8")
+    if name not in SHIPPED_SKILLS:
+        raise ValueError(f"unknown skill {name!r}; known: {', '.join(SHIPPED_SKILLS)}")
+    return (files("molmcp.skill") / name / "SKILL.md").read_text(encoding="utf-8")
 
 
-def install_skill(host: Host) -> Path:
-    """Overwrite the managed usage skill for *host*. Only ``molmcp init`` calls this."""
-    dest_dir = default_skill_dir(host)
+def install_skill(host: Host, name: str = SKILL_NAME) -> Path:
+    """Overwrite one managed skill for *host*."""
+    dest_dir = default_skill_dir(host, name)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / "SKILL.md"
-    dest.write_text(skill_template(), encoding="utf-8")
+    dest.write_text(skill_template(name), encoding="utf-8")
     return dest
+
+
+def install_skills(host: Host) -> tuple[Path, ...]:
+    """Overwrite every shipped skill for *host*. ``molmcp init`` calls this."""
+    return tuple(install_skill(host, name) for name in SHIPPED_SKILLS)
 
 
 __all__ = [
     "Host",
     "PlaneToggle",
+    "SHIPPED_SKILLS",
     "SKILL_NAME",
     "default_plane_ids",
     "default_skill_dir",
     "default_write_path",
     "install_skill",
+    "install_skills",
     "render_init",
     "render_mcp_json",
     "resolve_plane_toggles",
