@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import settings
+from . import __version__, settings
 from .client_config import install_skill, render_init
 from .config import AppConfig, ConfigurationError, load_config
 from .planes import (
@@ -32,6 +32,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "MolCrafts MCP: `serve` runs the composed core; "
             "`init <host>` wires the host and installs the usage skill."
         ),
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
