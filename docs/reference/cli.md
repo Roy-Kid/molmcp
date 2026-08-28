@@ -1,7 +1,7 @@
 # CLI reference
 
 ```
-molmcp [-h] {serve,init,planes,route,config,cache,info,search,explore,index} ...
+molmcp [-h] [-V] {serve,init,planes,route,config,cache,info,search,explore,index} ...
 python -m molmcp …
 ```
 
@@ -9,8 +9,8 @@ The `molmcp` script is installed by `pip install molcrafts-molmcp`.
 `python -m molmcp` is equivalent when the package is importable.
 
 **Default with no arguments:** `molmcp planes` (list connectable planes).
-Bare `molmcp` with no subcommand lists planes (`molmcp planes`).
-`molmcp serve` with no plane id starts the composed stack.
+`molmcp --version` / `-V` prints `molmcp <version>` from the installed
+package metadata. `molmcp serve` with no plane id starts the composed stack.
 
 ## `molmcp serve [plane]`
 

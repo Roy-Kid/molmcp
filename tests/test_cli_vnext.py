@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from molmcp import cli
+import pytest
+
+from molmcp import __version__, cli
 from molmcp.environment import EnvironmentReport
 
 
@@ -35,6 +37,20 @@ def _config(tmp_path):
         encoding="utf-8",
     )
     return path
+
+
+def test_version_flag(capsys):
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["--version"])
+    assert exited.value.code == 0
+    assert __version__ in capsys.readouterr().out
+
+
+def test_version_short_flag(capsys):
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["-V"])
+    assert exited.value.code == 0
+    assert capsys.readouterr().out.strip() == f"molmcp {__version__}"
 
 
 def test_no_arguments_defaults_to_planes(monkeypatch, tmp_path, capsys):

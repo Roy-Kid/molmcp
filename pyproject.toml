@@ -1,6 +1,6 @@
 [project]
 name = "molcrafts-molmcp"
-version = "0.6.0"
+version = "0.6.1"
 description = "MolCrafts MCP: knowledge core plus FastMCP-mounted provider planes"
 readme = "README.md"
 requires-python = ">=3.12"
