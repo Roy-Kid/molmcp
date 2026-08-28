@@ -1,13 +1,13 @@
 ---
 title: molmcp
-description: Multi-plane MCP for MolCrafts — one product domain per connection, knowledge pages on demand, no mega-server.
+description: MolCrafts MCP — one composed serve (knowledge core + namespaced provider mounts), knowledge pages on demand.
 hide:
   - navigation
   - toc
 hero:
   kicker: molmcp Manual
   title: molmcp
-  description: "Multi-plane, on-demand MCP for MolCrafts. Connect only the planes you need — catalog routing, molcrafts knowledge pages, molvis live sessions, molq jobs, molexp workspaces. Science APIs stay in code; agents discover them, then call them elsewhere."
+  description: "MolCrafts MCP. molmcp serve mounts molvis/molq/molexp onto the molcrafts core (molvis_open). Science APIs stay in code; agents discover them, then call them elsewhere."
   install:
     label: Install
     command: pip install molcrafts-molmcp
@@ -45,22 +45,18 @@ hero:
 
 <span class="molcrafts-manual-eyebrow">Features</span>
 
-## One plane per connection
+## One serve, namespaced mounts
 
-There is **no** mega-server that mounts every tool under `molmcp`. Clients
-link planes on demand. Tool ids look like `molvis__open` or
-`molcrafts__packages` — server name plus bare tool.
+`molmcp serve` is the molcrafts core with providers FastMCP-mounted.
+Tool ids look like `molcrafts__packages` and `molcrafts__molvis_open`.
+`molmcp init grok --disable molq` omits a mount.
 
 </div>
 
 <div class="molcrafts-manual-grid molcrafts-manual-grid--cols-3">
   <a href="concepts/architecture/">
-    <strong>catalog</strong>
-    <em>Bootstrap only: list_planes and route(task) so the agent knows which product planes to connect.</em>
-  </a>
-  <a href="concepts/discovery/">
     <strong>molcrafts</strong>
-    <em>OKF-style knowledge pages — packages → outline → open → search / compose — over a content-addressed code graph.</em>
+    <em>Always-on core: knowledge pages (packages → outline → open) plus list_planes / route for optional provider planes.</em>
   </a>
   <a href="guides/molvis-workbench/">
     <strong>molvis</strong>
@@ -76,21 +72,21 @@ link planes on demand. Tool ids look like `molvis__open` or
   </a>
   <a href="concepts/provider-design/">
     <strong>No invented science tools</strong>
-    <em>Science APIs stay in molpy/molrs/… Agents discover them on molcrafts, then call them in agent Python or molvis exec.</em>
+    <em>Science APIs stay in molpy/molrs/… Agents discover them on molcrafts, then call them in agent Python or molvis_exec.</em>
   </a>
 </div>
 
 </section>
 
 <!-- ────────────────────────────────────────────────────────────
-     THE TOOLS — six graph operations
+     THE TOOLS — knowledge pages + routing
      ──────────────────────────────────────────────────────────── -->
 
 <section class="molcrafts-manual-section molcrafts-manual-section--stack" markdown>
 
 <div class="molcrafts-manual-section__header" markdown>
 
-<span class="molcrafts-manual-eyebrow">The molcrafts plane</span>
+<span class="molcrafts-manual-eyebrow">The molcrafts core</span>
 
 ## Knowledge pages, not a tool mega-menu
 
@@ -101,6 +97,8 @@ meant to be **injected into context** — not skimmed as a search hit list.
 </div>
 
 <dl class="molcrafts-feature-matrix">
+  <dt><code>list_planes</code> / <code>route</code></dt>
+  <dd>Which optional provider planes exist, and which to connect for a task.</dd>
   <dt><code>packages</code></dt>
   <dd>L0 directory of indexed packages and summaries — choose sources yourself.</dd>
   <dt><code>outline</code></dt>
@@ -136,11 +134,10 @@ Names that do not resolve come back as structured errors.
 </div>
 
 ```text
-# catalog plane — which connections do I need?
-catalog.route("compute an RDF in molpy")
-→ connect molcrafts (knowledge) …
+# molcrafts core — already connected; route optional providers
+molcrafts.route("compute an RDF in molpy")
+→ no extra plane (knowledge lives here)
 
-# molcrafts plane — inject real API pages
 molcrafts.packages()                    # pick source "molpy"
 molcrafts.search("RDF", source="molpy")
 molcrafts.open("molpy.compute.rdf.RDF")
@@ -195,22 +192,21 @@ source spec ─▶ snapshot ─▶ extract symbols ─▶ resolve names ─▶ g
 
 <span class="molcrafts-manual-eyebrow">Run it</span>
 
-## One process per plane
+## Core plus one process per provider
 
-Install once, then serve **only** the planes your client should see. Use
-`molmcp planes` / `molmcp route "…"` to discover the catalog.
+Install once. Serve **molcrafts** always; add provider planes your client
+should see. Use `molmcp planes` / `molmcp route "…"` to see optional planes.
 
 </div>
 
 ```bash
 pip install molcrafts-molmcp
 molmcp planes
-molmcp serve catalog          # list_planes / route
-molmcp serve molcrafts        # knowledge pages (needs at least one configured source)
-molmcp serve molvis           # live viewer session
-# Claude Code — one MCP entry per plane you connect:
-#   claude mcp add catalog -- molmcp serve catalog
+molmcp serve molcrafts        # core: knowledge + list_planes / route
+molmcp serve molvis           # optional live viewer
+# Claude Code — molcrafts always; providers as extra entries:
 #   claude mcp add molcrafts -- molmcp serve molcrafts
+#   claude mcp add molvis -- molmcp serve molvis
 ```
 
 </section>
@@ -238,12 +234,12 @@ molmcp serve molvis           # live viewer session
   <a href="get-started/quickstart/">
     <span>02</span>
     <strong>Quickstart</strong>
-    <em>Serve catalog + molcrafts, wire multi-link MCP clients.</em>
+    <em>Serve molcrafts, optionally add provider planes, wire MCP clients.</em>
   </a>
   <a href="concepts/architecture/">
     <span>03</span>
     <strong>Architecture</strong>
-    <em>One plane per connection — catalog, knowledge, providers.</em>
+    <em>molcrafts core (always on) plus optional provider planes.</em>
   </a>
   <a href="concepts/discovery/">
     <span>04</span>

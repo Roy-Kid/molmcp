@@ -1,25 +1,20 @@
 # Deploy locally (stdio)
 
-Local **stdio** MCP: the client spawns `molmcp serve <plane>` as a subprocess
-per session. No HTTP, no shared mega-server — **one plane per connection**.
+Local **stdio** MCP: the host spawns **one** `molmcp serve` subprocess.
+Providers are FastMCP-mounted onto the molcrafts core.
 
 ---
 
 ## What molmcp serves
 
-| Plane | Command | What the agent sees |
-|-------|---------|---------------------|
-| **catalog** | `molmcp serve catalog` | `list_planes`, `route(task)` — bootstrap only |
-| **molcrafts** | `molmcp serve molcrafts` | Knowledge pages: `packages`, `outline`, `open`, `search`, `compose`, … |
-| **molvis** | `molmcp serve molvis` | Live stage session: `open`, `exec`, `poll_events`, … |
-| **molq** | `molmcp serve molq` | Job store (+ opt-in submit/cancel when enabled) |
-| **molexp** | `molmcp serve molexp` | Workspace layout / scaffold tools |
+| Command | What the agent sees |
+|---------|---------------------|
+| **`molmcp serve`** | Core: `list_planes`, `route`, `packages`, `outline`, `open`, … plus namespaced mounts `molvis_open`, `molq_list_jobs`, `molexp_list_projects`, … |
+| **`molmcp serve molvis`** (debug) | Vis-only process, bare `open` / `exec` |
 
-Connect only the planes the session needs. Tool ids are
-`<plane>__<tool>` (MCP server name + bare tool name).
-
-There is no parent `python -m molmcp` that mounts every provider under one
-server name.
+`molcrafts` cannot be disabled. `molmcp init grok --disable molq` omits that
+mount. Tool ids on the composed server are `molcrafts__packages` and
+`molcrafts__molvis_open`.
 
 ## Prerequisites
 
@@ -52,7 +47,6 @@ server name.
 ### Claude Code
 
 ```bash
-claude mcp add catalog -- molmcp serve catalog
 claude mcp add molcrafts -- molmcp serve molcrafts
 claude mcp add molvis -- molmcp serve molvis   # optional
 claude mcp list
@@ -63,10 +57,6 @@ claude mcp list
 ```json
 {
   "mcpServers": {
-    "catalog": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/molmcp", "molmcp", "serve", "catalog"]
-    },
     "molcrafts": {
       "command": "uv",
       "args": ["run", "--directory", "/path/to/molmcp", "molmcp", "serve", "molcrafts"]
@@ -77,7 +67,7 @@ claude mcp list
 
 ## Recommended agent loop
 
-1. `catalog.route("…")` → which planes to connect.
+1. `molcrafts.route("…")` → which optional provider planes to connect.
 2. `molcrafts.packages` / `outline` / `open` → real APIs into context.
 3. Call science from agent Python (or `molvis.exec` for a live canvas).
 4. Never invent MCP tools that re-export molpy/molrs methods.

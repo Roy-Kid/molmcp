@@ -1,4 +1,4 @@
-"""Client config: default all planes; --enable / --disable."""
+"""Init: one composed serve entry; skill only via init; --disable providers."""
 
 from __future__ import annotations
 
@@ -9,85 +9,99 @@ import pytest
 
 from molmcp import client_config
 from molmcp.client_config import (
-    render_client,
+    render_init,
     render_mcp_json,
     resolve_plane_toggles,
 )
+from molmcp.planes import CORE_PLANE_ID as CORE
 
 
-def test_default_all_enabled():
-    t = resolve_plane_toggles(available=("catalog", "molcrafts", "molvis", "molq"))
-    assert t.enabled == ("catalog", "molcrafts", "molvis", "molq")
+def test_default_core_plus_providers():
+    t = resolve_plane_toggles(available=("molcrafts", "molvis", "molq"))
+    assert t.enabled == ("molcrafts", "molvis", "molq")
     assert t.disabled == ()
 
 
 def test_disable_then_enable():
     t = resolve_plane_toggles(
-        available=("catalog", "molvis", "molq"),
+        available=("molcrafts", "molvis", "molq"),
         disable=["molq", "molvis"],
         enable=["molvis"],
     )
-    assert t.enabled == ("catalog", "molvis")
+    assert t.enabled == ("molcrafts", "molvis")
     assert t.disabled == ("molq",)
 
 
-def test_disable_unknown_raises():
-    with pytest.raises(ValueError, match="unknown plane"):
-        resolve_plane_toggles(available=("catalog",), disable=["nope"])
+def test_disable_core_raises():
+    with pytest.raises(ValueError, match="cannot be disabled"):
+        resolve_plane_toggles(available=("molcrafts", "molvis"), disable=["molcrafts"])
 
 
-def test_disable_all_raises():
-    with pytest.raises(ValueError, match="at least one"):
-        resolve_plane_toggles(available=("a", "b"), disable=["a", "b"])
+def test_disable_catalog_raises():
+    with pytest.raises(ValueError, match="catalog is not a plane"):
+        resolve_plane_toggles(available=("molcrafts", "molvis"), disable=["catalog"])
 
 
-def test_a_disabled_plane_is_omitted_from_the_server_map():
-    t = resolve_plane_toggles(
-        available=("catalog", "molvis"),
-        disable=["molvis"],
-    )
+def test_composed_server_map_is_a_single_serve():
+    t = resolve_plane_toggles(available=("molcrafts", "molvis", "molq"))
     servers = render_mcp_json(t)["mcpServers"]
-    assert set(servers) == {"catalog"}
-    assert servers["catalog"]["args"][-2:] == ["serve", "catalog"]
+    assert set(servers) == {CORE}
+    args = servers[CORE]["args"]
+    assert args[-1] == "serve" or "serve" in args
+    assert "--disable" not in args
 
 
-def test_render_client_claude_only_enabled():
-    _toggle, text = render_client(
-        "claude",
-        disable=["molq"] if False else [],
+def test_disabled_provider_becomes_a_serve_flag():
+    t = resolve_plane_toggles(
+        available=("molcrafts", "molvis", "molq"),
+        disable=["molq"],
     )
-    # smoke: valid JSON with mcpServers
-    import json
+    args = render_mcp_json(t)["mcpServers"][CORE]["args"]
+    assert args[args.index("--disable") + 1] == "molq"
+    assert "molq" not in t.enabled
 
+
+def test_render_init_includes_core():
+    _toggle, text = render_init("grok", available=("molcrafts", "molvis"))
     payload = json.loads(text)
-    assert "mcpServers" in payload
-    assert payload["mcpServers"]
+    assert set(payload["mcpServers"]) == {CORE}
 
 
-def test_cli_client_disable(capsys, monkeypatch):
+def test_cli_init_writes_json_and_skill(tmp_path, monkeypatch, capsys):
     from molmcp import cli
 
+    monkeypatch.setattr(client_config.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(
         "molmcp.client_config.default_plane_ids",
-        lambda: ("catalog", "molvis", "molq"),
+        lambda: ("molcrafts", "molvis", "molq"),
     )
-    # re-import resolve path uses default_plane_ids via resolve_plane_toggles
-    code = cli.main(["client", "grok", "--disable", "molq"])
+    code = cli.main(["init", "grok", "--disable", "molq"])
     assert code == 0
-    servers = json.loads(capsys.readouterr().out)["mcpServers"]
-    assert "molq" not in servers
-    assert set(servers) == {"catalog", "molvis"}
+    err = capsys.readouterr().err
+    assert "wrote" in err
+    servers = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))[
+        "mcpServers"
+    ]
+    assert set(servers) == {CORE}
+    skill = tmp_path / ".grok" / "skills" / "molcrafts" / "SKILL.md"
+    assert skill.is_file()
+    assert "SYMBOL_NOT_FOUND" in skill.read_text(encoding="utf-8")
+
+
+def test_cli_init_cannot_disable_core(capsys, monkeypatch, tmp_path):
+    from molmcp import cli
+
+    monkeypatch.setattr(client_config.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(
+        "molmcp.client_config.default_plane_ids",
+        lambda: ("molcrafts", "molvis"),
+    )
+    code = cli.main(["init", "grok", "--disable", "molcrafts"])
+    assert code == 2
+    assert "cannot be disabled" in capsys.readouterr().err
 
 
 class TestLaunchableFromAGuiClient:
-    """A generated config has to start when the client is not a shell.
-
-    Claude Desktop and friends are launched by the desktop session, whose
-    PATH is the system default — a virtualenv's bin directory is not on it.
-    Emitting the bare name `molmcp` produced a config that worked when
-    tested in a terminal and failed for the user it was generated for.
-    """
-
     def test_command_is_the_resolved_absolute_path(self, monkeypatch, tmp_path):
         installed = tmp_path / "venv" / "bin" / "molmcp"
         installed.parent.mkdir(parents=True)
@@ -95,13 +109,12 @@ class TestLaunchableFromAGuiClient:
         monkeypatch.setattr(client_config.shutil, "which", lambda name: str(installed))
 
         config = client_config.render_mcp_json(
-            client_config.PlaneToggle(("catalog",), (), ("catalog",))
+            client_config.PlaneToggle(("molcrafts",), (), ("molcrafts",))
         )
 
-        assert config["mcpServers"]["catalog"]["command"] == str(installed)
+        assert config["mcpServers"]["molcrafts"]["command"] == str(installed)
 
     def test_fallback_uses_this_interpreter_not_a_bare_python(self, monkeypatch):
-        """`python` is frequently absent on macOS; sys.executable never is."""
         monkeypatch.setattr(client_config.shutil, "which", lambda name: None)
 
         command = client_config._molmcp_command()
@@ -111,52 +124,31 @@ class TestLaunchableFromAGuiClient:
 
 
 class TestOneJsonForEveryHost:
-    """Every host molmcp targets reads the standard `mcpServers` JSON.
-
-    Grok loads ~/.claude.json, .cursor/mcp.json and project .mcp.json
-    alongside its own config.toml, and Claude Code and Cursor read the same
-    shape. Hand-rolling TOML bought nothing and cost an escaping bug, so
-    there is one body now and the host only picks where to put it.
-    """
-
     def test_the_body_is_identical_for_every_host(self):
-        toggle = client_config.PlaneToggle(("catalog",), (), ("catalog",))
+        toggle = client_config.PlaneToggle(("molcrafts",), (), ("molcrafts",))
 
         bodies = {
-            host: client_config.render_client(host, available=toggle.all_planes)[1]
-            for host in ("grok", "claude", "cursor")
+            host: client_config.render_init(host, available=toggle.all_planes)[1]
+            for host in ("grok", "claude", "cursor", "codex")
         }
 
         assert len(set(bodies.values())) == 1
 
-    @pytest.mark.parametrize("host", ["grok", "claude", "cursor"])
+    @pytest.mark.parametrize("host", ["grok", "claude", "cursor", "codex"])
     def test_every_host_gets_parseable_json(self, host):
-        _, text = client_config.render_client(host)
+        _, text = client_config.render_init(host, available=("molcrafts",))
 
         assert "mcpServers" in json.loads(text)
 
-    def test_the_host_is_optional(self):
-        _, text = client_config.render_client()
+    def test_each_host_has_a_skill_directory(self):
+        for host in ("grok", "claude", "cursor", "codex"):
+            assert client_config.default_skill_dir(host).name == "molcrafts"
 
-        assert "mcpServers" in json.loads(text)
 
-    def test_disabled_planes_are_absent_rather_than_flagged(self):
-        toggle = client_config.PlaneToggle(("catalog",), ("molq",), ("catalog", "molq"))
-
-        servers = client_config.render_mcp_json(toggle)["mcpServers"]
-
-        assert set(servers) == {"catalog"}
-
-    @pytest.mark.parametrize(
-        ("host", "tail"),
-        [
-            ("claude", ".claude.json"),
-            ("cursor", "mcp.json"),
-            ("grok", "mcp.json"),
-        ],
-    )
-    def test_each_host_has_a_default_destination(self, host, tail):
-        assert str(client_config.default_write_path(host)).endswith(tail)
-
-    def test_no_toml_is_generated_any_more(self):
-        assert not hasattr(client_config, "render_grok_toml")
+def test_skill_template_is_shipped():
+    text = client_config.skill_template()
+    assert "packages" in text
+    assert "SYMBOL_NOT_FOUND" in text
+    assert "disable-model-invocation: false" in text
+    assert "user-invocable: false" in text
+    assert "when-to-use:" in text

@@ -6,9 +6,11 @@ stateful runtime data (a job database, an on-disk workspace), a live in-process
 session, or a capability behind a native extension that source discovery cannot
 read.
 
-One process serves **one** provider. There is no mega-server and no mounting:
-`create_plane("molq")` builds a server named `molq` holding that provider's
-tools and nothing else. Passing more than one raises.
+`create_plane("molq")` still builds a focused server named `molq` with bare
+tools (debug / tests). Default `molmcp serve` uses `create_stack()`: the
+molcrafts core **mounts** that server with FastMCP `namespace="molq"`, so
+the client sees `molq_list_jobs`. Passing several providers to
+`create_plane` still raises — composition is `create_stack`.
 
 > **Read [provider-design.md](provider-design.md) first.** It defines the
 > conditions a tool must satisfy before earning a slot. Most ideas for new

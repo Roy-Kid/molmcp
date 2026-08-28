@@ -1,4 +1,4 @@
-"""Plane-oriented MolMCP CLI — one MCP process per product plane."""
+"""MolMCP CLI — molcrafts core plus one process per provider plane."""
 
 from __future__ import annotations
 
@@ -11,34 +11,50 @@ from pathlib import Path
 from typing import Any
 
 from . import settings
-from .client_config import render_client
+from .client_config import install_skill, render_init
 from .config import AppConfig, ConfigurationError, load_config
-from .planes import known_plane_ids, list_plane_infos, route_task
+from .planes import (
+    CORE_PLANE_ID,
+    GONE_PLANE_IDS,
+    gone_plane_message,
+    known_plane_ids,
+    list_plane_infos,
+    route_task,
+)
 from .runtime import build_collection
-from .server import create_plane
+from .server import create_plane, create_stack
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="molmcp",
         description=(
-            "MolCrafts multi-plane MCP: one product domain per connection. "
-            "Default: enable all planes in the client; use --disable / --enable."
+            "MolCrafts MCP: `serve` runs the composed core; "
+            "`init <host>` wires the host and installs the usage skill."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
     serve = commands.add_parser(
         "serve",
-        help="Start one MCP plane (required plane id).",
+        help="Start the composed molcrafts stack (default) or one plane.",
     )
     _config_argument(serve)
     serve.add_argument(
         "plane",
+        nargs="?",
+        default=None,
         help=(
-            "Plane to serve: catalog | molcrafts | <provider> "
-            "(run `molmcp planes` for the list)."
+            "Omit to mount enabled providers onto molcrafts (FastMCP namespace). "
+            "Pass molcrafts or a provider name for a single-plane debug server."
         ),
+    )
+    serve.add_argument(
+        "--disable",
+        action="append",
+        default=[],
+        metavar="PLANE",
+        help="Omit a provider mount (written by `molmcp init --disable`).",
     )
     serve.add_argument(
         "--transport",
@@ -56,7 +72,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     planes = commands.add_parser(
         "planes",
-        help="List connectable MCP planes (on-demand multi-link catalog).",
+        help="List the molcrafts core and optional provider planes.",
     )
     planes.add_argument(
         "--json",
@@ -70,44 +86,38 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     route.add_argument("task", help="User task description.")
 
-    client = commands.add_parser(
-        "client",
+    init = commands.add_parser(
+        "init",
         help=(
-            "Emit host MCP config. Default: all planes enabled; "
-            "use --disable / --enable to toggle."
+            "Install the usage skill and MCP config for one host. "
+            "molcrafts cannot be disabled."
         ),
     )
-    client.add_argument(
+    init.add_argument(
         "host",
-        nargs="?",
-        default=None,
-        choices=["grok", "claude", "cursor"],
-        help=(
-            "Where the config is headed. The body is the same standard "
-            "mcpServers JSON for every host; this only picks the default "
-            "output path."
-        ),
+        choices=["grok", "claude", "cursor", "codex"],
+        help="Host to wire (user-level skill + MCP JSON).",
     )
-    client.add_argument(
+    init.add_argument(
         "--enable",
         action="append",
         default=[],
         metavar="PLANE",
-        help="Enable a plane (after --disable). Repeatable.",
+        help="Enable a provider mount (after --disable). Repeatable.",
     )
-    client.add_argument(
+    init.add_argument(
         "--disable",
         action="append",
         default=[],
         metavar="PLANE",
-        help="Disable a plane. Repeatable. Default is all enabled.",
+        help="Omit a provider mount. Repeatable.",
     )
-    client.add_argument(
+    init.add_argument(
         "-o",
         "--output",
         type=Path,
         default=None,
-        help="Write to this path (default: print to stdout).",
+        help="MCP JSON path (default: that host's user config).",
     )
 
     info = commands.add_parser("info", help="Show registry and index coverage.")
@@ -235,29 +245,39 @@ def _optional(values: list[str]) -> list[str] | None:
 
 
 def _serve(args: argparse.Namespace) -> int:
-    plane = args.plane.strip().lower()
-    known = known_plane_ids()
-    # Allow serving any discovered provider even if not in the static meta table.
-    if plane not in known and plane not in {p.name for p in _discover_safe()}:
-        raise ConfigurationError(
-            f"unknown plane {plane!r}. Run `molmcp planes` for the catalog."
+    plane_raw = args.plane
+    plane = plane_raw.strip().lower() if plane_raw else None
+    if plane in GONE_PLANE_IDS:
+        raise ConfigurationError(gone_plane_message(plane))
+    if plane is not None:
+        known = known_plane_ids()
+        if plane not in known and plane not in {p.name for p in _discover_safe()}:
+            raise ConfigurationError(
+                f"unknown plane {plane!r}. Run `molmcp planes` for the list."
+            )
+
+    config = None
+    try:
+        config = _load(args)
+    except (ConfigurationError, FileNotFoundError):
+        config = None
+
+    if plane is None:
+        server = create_stack(
+            config=config,
+            disable=args.disable or (),
+            discover_entry_points=not args.no_discover,
         )
-
-    config = _load(args) if plane == "molcrafts" else None
-    # Provider planes may still load config for HTTP auth settings.
-    if plane not in {"catalog", "molcrafts"}:
-        try:
-            config = _load(args)
-        except ConfigurationError:
-            config = None
-        except FileNotFoundError:
-            config = None
-
-    server = create_plane(
-        plane,
-        config=config,
-        discover_entry_points=not args.no_discover,
-    )
+    else:
+        if args.disable:
+            raise ConfigurationError(
+                "--disable applies to composed `molmcp serve` only"
+            )
+        server = create_plane(
+            plane,
+            config=config,
+            discover_entry_points=not args.no_discover,
+        )
     transport = args.transport or (
         config.server.transport if config is not None else "stdio"
     )
@@ -288,21 +308,23 @@ def _planes(args: argparse.Namespace) -> int:
     planes = [p.to_dict() for p in list_plane_infos()]
     payload = {
         "ok": True,
-        "model": "multi-plane-default-all",
+        "core": CORE_PLANE_ID,
+        "model": "molcrafts core + optional provider planes",
         "planes": planes,
         "hint": (
-            "Default: enable every plane in the client. "
-            "molmcp client grok                  # all on\n"
-            "molmcp client grok --disable molq   # all except molq\n"
-            "molmcp client grok --disable molq --enable molq  # re-enable"
+            "`molmcp serve` mounts enabled providers onto molcrafts. "
+            "Disable a mount with:\n"
+            "molmcp init grok --disable molq\n"
+            "molmcp init grok --disable molq --enable molq  # re-enable"
         ),
     }
     if args.json:
         _emit(payload)
         return 0
-    print("MolCrafts MCP planes (default: all enabled in client):\n")
+    print("MolCrafts MCP — molcrafts core (always on) + provider planes:\n")
     for row in planes:
-        print(f"  {row['id']:12}  {row['serve_command']}")
+        flag = "core" if not row.get("disableable", True) else "optional"
+        print(f"  {row['id']:12}  {row['serve_command']}  [{flag}]")
         print(f"               {row['purpose']}")
         print(f"               when: {row['when_to_connect']}")
         if row.get("tools_hint"):
@@ -317,29 +339,28 @@ def _route(args: argparse.Namespace) -> int:
     return 0
 
 
-def _client(args: argparse.Namespace) -> int:
-    toggle, text = render_client(
+def _init(args: argparse.Namespace) -> int:
+    from .client_config import default_write_path
+
+    toggle, text = render_init(
         args.host,
         enable=args.enable,
         disable=args.disable,
     )
-    if args.output is not None:
-        path = args.output.expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        print(
-            f"wrote {path}  enabled={list(toggle.enabled)}  "
-            f"disabled={list(toggle.disabled)}",
-            file=sys.stderr,
-        )
-        return 0
-    # stderr summary so piping stdout stays clean
+    path = (
+        args.output.expanduser()
+        if args.output is not None
+        else default_write_path(args.host)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    skill_path = install_skill(args.host)
     print(
-        f"# enabled: {', '.join(toggle.enabled)}"
-        + (f"  # disabled: {', '.join(toggle.disabled)}" if toggle.disabled else ""),
+        f"wrote {path}  enabled={list(toggle.enabled)}  "
+        f"disabled={list(toggle.disabled)}\n"
+        f"wrote {skill_path}",
         file=sys.stderr,
     )
-    sys.stdout.write(text)
     return 0
 
 
@@ -550,7 +571,7 @@ def main(argv: list[str] | None = None) -> int:
         "serve": _serve,
         "planes": _planes,
         "route": _route,
-        "client": _client,
+        "init": _init,
         "info": _info,
         "search": _search,
         "explore": _explore,

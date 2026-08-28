@@ -41,10 +41,29 @@ def test_no_arguments_defaults_to_planes(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     assert cli.main([]) == 0
     out = capsys.readouterr().out
-    assert "multi-link" in out.lower() or "planes" in out.lower() or "catalog" in out
+    assert "molcrafts" in out.lower()
+    assert "catalog is not a plane" not in out.lower()
 
 
-def test_serve_requires_plane(monkeypatch, tmp_path, capsys):
+def test_serve_no_plane_uses_stack(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeServer:
+        def run(self, **kwargs):
+            captured.update(kwargs)
+
+    def fake_stack(**kwargs):
+        captured["disable"] = list(kwargs.get("disable") or [])
+        return FakeServer()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "create_stack", fake_stack)
+    assert cli.main(["serve", "--disable", "molq"]) == 0
+    assert captured["disable"] == ["molq"]
+    assert captured["transport"] == "stdio"
+
+
+def test_serve_core(monkeypatch, tmp_path, capsys):
     captured = {}
 
     class FakeServer:
@@ -53,12 +72,25 @@ def test_serve_requires_plane(monkeypatch, tmp_path, capsys):
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "create_plane", lambda *a, **kwargs: FakeServer())
-    assert cli.main(["serve", "catalog"]) == 0
+    monkeypatch.setattr(cli, "create_stack", lambda **kwargs: FakeServer())
+    assert cli.main(["serve", "molcrafts"]) == 0
     assert captured == {
         "transport": "stdio",
         "show_banner": False,
         "log_level": "ERROR",
     }
+
+
+def test_serve_catalog_is_user_error(monkeypatch, tmp_path, capsys):
+    class FakeServer:
+        def run(self, **kwargs):
+            raise AssertionError("must fail before run")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "create_plane", lambda *a, **kwargs: FakeServer())
+    code = cli.main(["serve", "catalog"])
+    assert code == 2
+    assert "catalog is not a plane" in capsys.readouterr().err
 
 
 def test_search_emits_json(monkeypatch, tmp_path, capsys):
@@ -92,10 +124,11 @@ def test_non_loopback_override_requires_auth(monkeypatch, tmp_path, capsys):
             raise AssertionError("must fail before run")
 
     monkeypatch.setattr(cli, "create_plane", lambda *a, **kwargs: FakeServer())
+    monkeypatch.setattr(cli, "create_stack", lambda **kwargs: FakeServer())
     code = cli.main(
         [
             "serve",
-            "catalog",
+            "molcrafts",
             "--config",
             str(_config(tmp_path)),
             "--transport",

@@ -1,4 +1,4 @@
-"""Build one MCP plane server — never a multi-provider mega-server."""
+"""Build MCP servers — one focused FastMCP per plane, composed via mount."""
 
 from __future__ import annotations
 
@@ -23,7 +23,15 @@ from .middleware import (
     assert_plane_tool_names,
     validate_tool_annotations,
 )
-from .planes import BUILTIN_PLANE_IDS, list_plane_infos, route_task
+from .planes import (
+    BUILTIN_PLANE_IDS,
+    CORE_PLANE_ID,
+    GONE_PLANE_IDS,
+    core_disable_message,
+    gone_plane_message,
+    list_plane_infos,
+    route_task,
+)
 from .provider import (
     PROVIDER_NAME_PATTERN,
     Provider,
@@ -58,7 +66,7 @@ def create_plane(
     """Build a **single-plane** FastMCP server.
 
     Args:
-        plane: Plane id (``catalog``, ``molcrafts``, or a provider name such
+        plane: Plane id (``molcrafts`` core, or a provider name such
             as ``molvis``). This becomes the MCP server name clients see.
         collection: Injected discovery collection (tests / embedding).
             Required only for ``molcrafts`` when *config* is not used.
@@ -67,7 +75,7 @@ def create_plane(
             is built from it.
         provider: Explicit provider instance for provider planes (tests).
         providers: Deprecated alias for a single-item explicit provider list;
-            if more than one is passed, raises — multi-provider servers are gone.
+            if more than one is passed, raises — use :func:`create_stack`.
         discover_entry_points: Load the matching ``molmcp.providers`` entry
             point when *provider* is not injected.
         enable_path_safety / enable_response_limit / response_limit_bytes:
@@ -82,12 +90,14 @@ def create_plane(
     plane_id = plane.strip().lower()
     if not plane_id:
         raise ValueError("plane id must be non-empty")
+    if plane_id in GONE_PLANE_IDS:
+        raise ValueError(gone_plane_message(plane_id))
 
     if providers is not None:
         explicit_list = list(providers)
         if len(explicit_list) > 1:
             raise ValueError(
-                "multi-provider servers are removed; serve one plane per process"
+                "create_plane serves one plane; compose providers with create_stack"
             )
         if provider is not None and explicit_list:
             raise ValueError("pass provider= or providers=[one], not both")
@@ -102,21 +112,7 @@ def create_plane(
             f"serve {getattr(provider, 'name', 'it')!r} as its own plane"
         )
 
-    if plane_id == "catalog":
-        mcp = _base_server(
-            plane_id,
-            instructions=instructions or _catalog_instructions(),
-            auth=None,
-            lifespan=None,
-            enable_path_safety=enable_path_safety,
-            enable_response_limit=enable_response_limit,
-            response_limit_bytes=response_limit_bytes,
-        )
-        _register_catalog(mcp)
-        _validate(mcp, validate_annotations, plane_id=plane_id)
-        return mcp
-
-    if plane_id == "molcrafts":
+    if plane_id == CORE_PLANE_ID:
         app_config, coll = _resolve_collection(collection, config)
         auth = _environment_auth(app_config) if app_config is not None else None
 
@@ -144,6 +140,7 @@ def create_plane(
             response_limit_bytes=response_limit_bytes,
         )
         MolCraftsContextProvider(coll, runtime_status).register(mcp)
+        _register_core_routing(mcp)
         _validate(mcp, validate_annotations, plane_id=plane_id)
         return mcp
 
@@ -176,6 +173,70 @@ def create_plane(
     return mcp
 
 
+def create_stack(
+    *,
+    collection: CollectionIndex | None = None,
+    config: AppConfig | str | Path | None = None,
+    providers: Iterable[Provider] | None = None,
+    disable: Iterable[str] = (),
+    discover_entry_points: bool = True,
+    enable_path_safety: bool = True,
+    enable_response_limit: bool = True,
+    response_limit_bytes: int = 256 * 1024,
+    validate_annotations: bool = True,
+    instructions: str | None = None,
+) -> FastMCP:
+    """Build the molcrafts core and mount enabled providers (FastMCP composition).
+
+    Provider tools are namespaced with the plane id (``molvis_open``). Core
+    tools stay bare (``packages``, ``open``, ``route``). ``molcrafts`` cannot
+    be disabled.
+    """
+    skipped = {str(name).strip().lower() for name in disable if str(name).strip()}
+    if CORE_PLANE_ID in skipped:
+        raise ValueError(core_disable_message())
+    for name in skipped:
+        if name in GONE_PLANE_IDS:
+            raise ValueError(gone_plane_message(name))
+
+    parent = create_plane(
+        CORE_PLANE_ID,
+        collection=collection,
+        config=config,
+        discover_entry_points=False,
+        enable_path_safety=enable_path_safety,
+        enable_response_limit=enable_response_limit,
+        response_limit_bytes=response_limit_bytes,
+        validate_annotations=validate_annotations,
+        instructions=instructions or _stack_instructions(),
+    )
+    if providers is None:
+        if not discover_entry_points:
+            mounted: list[Provider] = []
+        else:
+            mounted = [
+                p
+                for p in discover_providers(only_available=True)
+                if p.name not in skipped
+            ]
+    else:
+        mounted = [p for p in providers if p.name not in skipped]
+
+    for provider in mounted:
+        child = create_plane(
+            provider.name,
+            provider=provider,
+            config=config,
+            discover_entry_points=False,
+            enable_path_safety=enable_path_safety,
+            enable_response_limit=enable_response_limit,
+            response_limit_bytes=response_limit_bytes,
+            validate_annotations=validate_annotations,
+        )
+        parent.mount(child, namespace=provider.name)
+    return parent
+
+
 def create_server(
     name: str | None = None,
     *,
@@ -189,9 +250,7 @@ def create_server(
     """
     plane_id = plane or name
     if plane_id is None:
-        raise ValueError("create_plane requires plane= (or legacy name=)")
-    # Strip kwargs that only applied to the mega-server.
-    kwargs.pop("provider_names", None)
+        raise ValueError("create_plane requires plane=")
     return create_plane(plane_id, **kwargs)
 
 
@@ -216,31 +275,34 @@ def _base_server(
     return mcp
 
 
-def _register_catalog(mcp: FastMCP) -> None:
+def _register_core_routing(mcp: FastMCP) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def list_planes() -> dict[str, object]:
-        """List MCP planes this install can serve (connect only what you need).
+        """List the core connection and optional provider planes.
 
-        Each row has ``id``, ``serve_command``, ``when_to_connect``, and
-        ``tools_hint``. There is no mega-server — one process per plane.
+        Each row has ``id``, ``serve_command``, ``when_to_connect``,
+        ``tools_hint``, and ``disableable``. molcrafts is always on;
+        only provider planes can be dropped from a client config.
         """
         planes = [p.to_dict() for p in list_plane_infos()]
         return {
             "ok": True,
             "planes": planes,
-            "model": "multi-link-on-demand",
+            "core": CORE_PLANE_ID,
+            "model": "molcrafts core + optional provider planes",
             "hint": (
-                "Configure separate MCP server entries per plane. "
-                "Start with catalog + the planes route() returns."
+                "Default `molmcp serve` mounts enabled providers onto this "
+                "core (FastMCP namespace: molvis_open). "
+                "Drop a mount with `molmcp init <host> --disable <plane>`."
             ),
         }
 
     @mcp.tool(annotations=_READ_ONLY)
     def route(task: str) -> dict[str, object]:
-        """Which plane(s) to connect for *task* (routing only — no science).
+        """Which optional provider plane(s) to connect for *task*.
 
-        Returns plane ids and ``molmcp serve <id>`` commands. Connect those
-        MCP links on demand; do not invent domain MCP tools for chemistry APIs.
+        Routing only — no science. molcrafts is already this connection.
+        Do not invent domain MCP tools for chemistry APIs.
         """
         return route_task(task)
 
@@ -315,27 +377,31 @@ def _validate(
         )
 
 
-def _catalog_instructions() -> str:
+def _molcrafts_instructions() -> str:
     return (
-        "MolCrafts MCP catalog plane — multi-link on-demand bootstrap.\n"
-        "1) list_planes — which product planes exist and how to serve them\n"
-        "2) route(task) — which plane(s) to connect for a user task\n"
-        "Connect only those MCP servers. Science APIs are never tools here; "
-        "use the molcrafts plane to discover symbols, molvis to draw, etc."
+        "MolCrafts knowledge core. Discover real symbols before coding.\n"
+        "1) list_planes — which provider mounts exist\n"
+        "2) route(task) — which provider namespace a task needs\n"
+        "3) packages — package directory; choose sources\n"
+        "4) outline(source, path?) — module tree\n"
+        "5) open(ref) — symbol page before coding\n"
+        "6) compose(task|refs) — budgeted multi-page pack\n"
+        "search/suggest are index helpers. "
+        "ok=false / SYMBOL_NOT_FOUND → capability gap: report the step, "
+        "the package/ref, and the result; do not invent the API.\n"
+        "knowledgeScope scopes packages/outline/open/search/compose. "
+        "Science APIs are never tools; invoke them in agent Python "
+        "or via the namespaced molvis tools."
     )
 
 
-def _molcrafts_instructions() -> str:
+def _stack_instructions() -> str:
     return (
-        "MolCrafts knowledge plane (OKF-style pages). "
-        "Codegraph is an index — do not treat scores as truth.\n"
-        "1) packages — package directory; choose sources\n"
-        "2) outline(source, path?) — module tree\n"
-        "3) open(ref) — symbol page before coding\n"
-        "4) compose(task|refs) — budgeted multi-page pack\n"
-        "search/suggest are index helpers. "
-        "ok=false / SYMBOL_NOT_FOUND → do not invent the API.\n"
-        "knowledgeScope scopes packages/outline/open/search/compose."
+        _molcrafts_instructions()
+        + "\nDefault serve mounts providers with FastMCP namespaces "
+        "(molvis_open, molq_list_jobs, molexp_list_projects). "
+        "`molmcp init <host> --disable <plane>` omits a mount. "
+        "If these tools are missing, tell the user to install or start molmcp."
     )
 
 
@@ -346,7 +412,8 @@ def _provider_instructions(plane_id: str) -> str:
         "Do not expect science methods as MCP tools; discover them on the "
         "molcrafts plane and invoke via agent Python or molvis exec.\n"
         f"Server name is '{plane_id}' so client tool ids look like "
-        f"'{plane_id}__<tool>'."
+        f"'{plane_id}__<tool>'. On the composed core they appear as "
+        f"'{plane_id}_<tool>' (FastMCP namespace)."
     )
 
 
@@ -380,4 +447,4 @@ def _environment_auth(config: AppConfig) -> TokenVerifier | None:
     return _EnvironmentTokenVerifier(environment_name)
 
 
-__all__ = ["create_plane", "create_server"]
+__all__ = ["create_plane", "create_server", "create_stack"]

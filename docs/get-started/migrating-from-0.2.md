@@ -15,22 +15,26 @@ noted.
 ships. See [Installation](installation.md#with-uv) for why; pip needs
 nothing extra.
 
-## One server became five
+## One server became a core plus optional planes
 
 Before, `molmcp serve` started one process that mounted every provider and
-prefixed their tools. Now each product domain is its own MCP connection:
+prefixed their tools. Now **`molcrafts` is the always-on core** (knowledge
+plus `list_planes` / `route`), and each provider is its own MCP connection:
 
 | Plane | Serves |
 |---|---|
-| `catalog` | Which planes exist and which to route to |
-| `molcrafts` | Knowledge and discovery over installed packages |
+| `molcrafts` (core) | Knowledge pages and routing; cannot be disabled |
 | `molq` | Job lifecycle |
 | `molexp` | Experiment-data workspaces |
 | `molvis` | A live viewer session |
 
-A client connects to the planes it wants, as separate servers. There is no
-mega-server to fall back to: passing more than one provider raises
-`ValueError: multi-provider servers are removed; serve one plane per process`.
+A short-lived `catalog` plane existed in 0.5 and has been absorbed: those
+tools live on molcrafts. `molmcp serve catalog` errors. Provider planes
+are the only `--disable` targets.
+
+`molmcp serve` now FastMCP-mounts providers onto molcrafts. Passing more
+than one provider to `create_plane` still raises; composition is
+`create_stack()`.
 
 ## Every tool id changed
 
@@ -43,8 +47,8 @@ set — nothing silently keeps working:
 | `mcp__molmcp__molcrafts_packages` | `mcp__molcrafts__packages` |
 | `mcp__molmcp__molcrafts_search` | `mcp__molcrafts__search` |
 | `mcp__molmcp__molcrafts_open` | `mcp__molcrafts__open` |
-| `mcp__molmcp__molvis_open` | `mcp__molvis__open` |
-| `mcp__molmcp__molq_list_jobs` | `mcp__molq__list_jobs` |
+| `mcp__molmcp__molvis_open` | `mcp__molcrafts__molvis_open` (composed) |
+| `mcp__molmcp__molq_list_jobs` | `mcp__molcrafts__molq_list_jobs` (composed) |
 
 Any prompt, allowlist, or auto-approve rule naming a tool must be rewritten.
 
@@ -68,7 +72,7 @@ fails at startup with an argparse error rather than serving anything:
 }
 ```
 
-`molmcp client <host>` generates this for you and omits planes whose package is
+`molmcp init <host>` generates this for you and omits planes whose package is
 not installed.
 
 Bare `molmcp` no longer starts a server either — it prints the plane catalog.

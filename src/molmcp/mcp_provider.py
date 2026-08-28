@@ -39,11 +39,12 @@ _READ_ONLY = ToolAnnotations(
 
 
 class MolCraftsContextProvider:
-    """Register hierarchical discovery tools on the **molcrafts** plane.
+    """Register hierarchical discovery tools on the **molcrafts** core.
 
     Tool names are bare (``packages``, ``open``, …). The MCP server name is
     ``molcrafts``, so clients see ``molcrafts__packages`` — never a mega
-    ``molmcp__molcrafts_*`` prefix stack.
+    ``molmcp__molcrafts_*`` prefix stack. ``list_planes`` / ``route`` are
+    registered alongside these tools by ``create_plane``.
     """
 
     name = "molcrafts"

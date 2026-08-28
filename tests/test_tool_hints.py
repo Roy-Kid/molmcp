@@ -27,7 +27,8 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "molmcp"
 #: spelling the naming middleware rejects at registration time.
 _MOUNT_ERA = re.compile(
     r"\b(molcrafts|molvis|molq|molexp)_"
-    r"(packages|outline|open|compose|search|suggest|exec|close|refresh|"
+    r"(packages|outline|open|compose|search|suggest|list_planes|route|"
+    r"exec|close|refresh|"
     r"capabilities|poll_events|list_sessions|list_jobs|get_job|job_logs|"
     r"list_destinations|list_queue|submit_job|cancel_job|list_projects|"
     r"list_experiments|list_runs|workspace_layout|validate_workspace|"
@@ -94,7 +95,8 @@ class TestSourceIsClean:
     def test_no_module_emits_a_mount_era_tool_name(self, path: Path):
         # Two modules state the contract by quoting the spelling it bans;
         # for them the mount-era form appearing is the point.
-        if path.name in {"naming.py", "provider.py"} and path.parent.name in {
+        contract_files = {"naming.py", "provider.py", "server.py", "planes.py"}
+        if path.name in contract_files and path.parent.name in {
             "middleware",
             "molmcp",
         }:

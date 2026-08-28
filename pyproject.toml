@@ -1,7 +1,7 @@
 [project]
 name = "molcrafts-molmcp"
-version = "0.5.3"
-description = "Multi-plane on-demand MCP for MolCrafts: one product domain per connection"
+version = "0.6.0"
+description = "MolCrafts MCP: knowledge core plus FastMCP-mounted provider planes"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "BSD-3-Clause"}
@@ -34,7 +34,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastmcp>=4.0.0b1,<5",
+    "fastmcp>=4.0.0b5,<5",
     "jsonschema>=4.25,<5",
     "packaging>=25,<27",
     # <0.26: tree-sitter 0.26.0 segfaults walking large generated JS bundles
@@ -83,6 +83,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "molmcp.discovery.store" = ["*.sql"]
+"molmcp.skill" = ["SKILL.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
@@ -146,18 +147,12 @@ commands = [
 # repo was rebuilt off.
 #
 # The lower bound is a pre-release on purpose. A bare `fastmcp` resolves to
-# the newest *stable*, which is 3.4.6; and `>=4.0.0` resolves to nothing,
-# because PyPI's 4.x line is a1/a2/b1/b2 with no final yet.
-#
-# uv will not install this from an index without `--prerelease=allow`: it
-# does not enable pre-releases for a transitive dependency. Measured: an
-# exact `==4.0.0b2` pin is refused for the same reason, so pinning buys
-# nothing and only freezes us a version behind. pip resolves either form.
+# the newest *stable* (3.x); and `>=4.0.0` resolves to nothing until 4.0.0
+# final exists. uv needs `--prerelease=allow` for the same reason.
 # See docs/get-started/installation.md.
 #
-# Narrow this to `>=4.0.0,<5` the day 4.0.0 ships — a stable lower bound
-# needs no pre-release opt-in and the uv problem goes with it.
+# Narrow this to `>=4.0.0,<5` the day 4.0.0 ships.
 [tool.uv]
 constraint-dependencies = [
-    "fastmcp-slim>=4.0.0b1,<5",
+    "fastmcp-slim>=4.0.0b5,<5",
 ]
