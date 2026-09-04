@@ -30,8 +30,23 @@ The git half is :class:`GitTransport` / :class:`GitHubTransport` plus
 :func:`extract_git_archive`. Network access is stdlib ``urllib``; the
 caller supplies an optional GitHub personal access token. This package
 never reads the environment.
+
+The store half is :class:`ImmutableGitStore`. A *SHA directory* is
+``<root>/commits/<sha>/`` with ``metadata.json`` plus ``tree/``.
+*Flatten the inner tree* means installing the tarball's single
+top-level directory (what :func:`extract_git_archive` returns) as that
+``tree/``, so ``harness.toml`` sits at the catalog root, not under
+``<repo>-<sha>/``.
+
+The activation half is :class:`Activation`. :meth:`Activation.bind` is
+the only constructor: it loads the pointer file or an empty in-memory
+record and does not write. The pointer names three published SHAs —
+*current*, *staged*, and *previous*. ``IneligibleShaError`` is
+``stage`` refusing a SHA that has no complete tree or whose catalog
+the caller cannot honor.
 """
 
+from .activate import Activation
 from .catalog import HarnessCatalog, ResolvedBundle, load_harness_catalog
 from .git import GitError, GitHubTransport, GitTransport, extract_git_archive
 from .models import (
@@ -44,9 +59,11 @@ from .models import (
     ComponentKind,
     ComponentSpec,
 )
+from .store import ImmutableGitStore
 
 __all__ = [
     "ALLOWED_REQUIRES",
+    "Activation",
     "BundleSpec",
     "COMPONENT_NAME_PATTERN",
     "CatalogError",
@@ -56,6 +73,7 @@ __all__ = [
     "GitHubTransport",
     "GitTransport",
     "HarnessCatalog",
+    "ImmutableGitStore",
     "KIND_PATH_PREFIX",
     "ResolvedBundle",
     "SHA_PATTERN",
