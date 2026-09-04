@@ -4,7 +4,6 @@ One line per live spec. Added by `/mol:spec`, pruned by `/mol:impl`.
 
 - [retrieval-first-discovery](retrieval-first-discovery.md) — make capability retrieval the spine; demote the call graph to an optional provenance-labeled evidence feature out of the ranking path [code-complete]
 - [hierarchical-discovery-facade](hierarchical-discovery-facade.md) — OKF-style context injection facade: packages/outline/open/compose pages; codegraph is index only; ranking demoted [approved]
-- [autonomous-harness-evolution-03-git-fetch](autonomous-harness-evolution-03-git-fetch.md) — GitTransport leaf in components/git.py; github.py via _transport [approved]
 - [autonomous-harness-evolution-04-sha-activate](autonomous-harness-evolution-04-sha-activate.md) — ImmutableGitStore + Activation.bind with current/previous/staged [approved]
 - [autonomous-harness-evolution-05-provider-worker](autonomous-harness-evolution-05-provider-worker.md) — WorkerProvider in worker.py; wrap mcp._lifespan; duplex v1 [approved]
 - [autonomous-harness-evolution-06-episode-receipt](autonomous-harness-evolution-06-episode-receipt.md) — EpisodeReceipt local TTL log, redaction, default-off consent [approved]

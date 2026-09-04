@@ -1,18 +1,22 @@
-"""GitHub source resolution tests (network mocked)."""
+"""GitHub source resolution tests (transport faked; no DiscoveryEngine)."""
 
 from __future__ import annotations
 
 import io
-import json
 import tarfile
+from pathlib import Path
 
 import pytest
 
-from molmcp.discovery import DiscoveryConfig, DiscoveryEngine
+from molmcp.components.git import GitError
+from molmcp.discovery.cache.snapshotcache import SnapshotCache
+from molmcp.discovery.config import DiscoveryConfig
 from molmcp.discovery.source import SourceError, github
+from molmcp.discovery.source.github import latest_commit, resolve_github
 
 _SHA = "a" * 40
 _FILES = {"calc.py": "def add(a, b):\n    return a + b\n"}
+_GITHUB_PY = Path(github.__file__).resolve()
 
 
 def _make_tarball(top: str, files: dict[str, str]) -> bytes:
@@ -26,61 +30,118 @@ def _make_tarball(top: str, files: dict[str, str]) -> bytes:
     return buf.getvalue()
 
 
-def fake_http(sha: str, files: dict[str, str]):
-    """Build an ``_http_get`` replacement serving a fake repo."""
+class _FakeTransport:
+    """GitTransport stand-in: resolve_commit + fetch_archive, no sockets."""
 
-    def _get(url, token=None, accept="application/vnd.github+json"):
-        if "codeload" in url:
-            return _make_tarball(f"repo-{sha}", files)
-        if "/commits/" in url:
-            return json.dumps({"sha": sha}).encode("utf-8")
-        return json.dumps({"default_branch": "main"}).encode("utf-8")
+    def __init__(
+        self,
+        sha: str = _SHA,
+        files: dict[str, str] | None = None,
+        *,
+        error: BaseException | None = None,
+    ) -> None:
+        self.sha = sha
+        self.files = dict(_FILES if files is None else files)
+        self.archive = _make_tarball(f"repo-{sha}", self.files)
+        self.error = error
+        self.resolve_calls: list[tuple[str, str, str | None]] = []
+        self.fetch_calls: list[tuple[str, str, str]] = []
 
-    return _get
+    def resolve_commit(self, owner: str, repo: str, ref: str | None) -> str:
+        self.resolve_calls.append((owner, repo, ref))
+        if self.error is not None:
+            raise self.error
+        return self.sha
 
-
-def _engine(tmp_path) -> DiscoveryEngine:
-    return DiscoveryEngine(DiscoveryConfig(cache_dir=tmp_path / "cache"))
-
-
-def test_resolves_ref_to_commit_sha(monkeypatch, tmp_path):
-    monkeypatch.setattr(github, "_http_get", fake_http(_SHA, _FILES))
-    result = _engine(tmp_path).index("github:owner/repo")
-    assert result.snapshot.origin == "github"
-    assert result.snapshot.commit == _SHA
-    assert result.snapshot.snapshot_id == f"github:commit:{_SHA}"
-
-
-def test_extracts_graph_from_tarball(monkeypatch, tmp_path):
-    monkeypatch.setattr(github, "_http_get", fake_http(_SHA, _FILES))
-    graph = _engine(tmp_path).get_graph("github:owner/repo")
-    assert "calc.add" in {n.qualname for n in graph.nodes}
+    def fetch_archive(self, owner: str, repo: str, sha: str) -> bytes:
+        self.fetch_calls.append((owner, repo, sha))
+        return self.archive
 
 
-def test_second_index_is_cache_first(monkeypatch, tmp_path):
-    calls: list[str] = []
-    served = fake_http(_SHA, _FILES)
-
-    def counting(url, token=None, accept="application/vnd.github+json"):
-        calls.append(url)
-        return served(url, token, accept)
-
-    monkeypatch.setattr(github, "_http_get", counting)
-    engine = _engine(tmp_path)
-    engine.index("github:owner/repo")
-    after_first = len(calls)
-    assert after_first > 0
-
-    engine.index("github:owner/repo")
-    assert len(calls) == after_first  # cache-first: no extra network
+def _config(tmp_path: Path) -> DiscoveryConfig:
+    return DiscoveryConfig(cache_dir=tmp_path / "cache")
 
 
-def test_ref_in_spec_is_recorded(monkeypatch, tmp_path):
-    monkeypatch.setattr(github, "_http_get", fake_http(_SHA, {"m.py": "x = 1\n"}))
-    result = _engine(tmp_path).index("github:owner/repo@dev")
-    assert result.snapshot.ref == "dev"
+def _install(monkeypatch: pytest.MonkeyPatch, fake: _FakeTransport) -> _FakeTransport:
+    monkeypatch.setattr(github, "_transport", lambda _config: fake)
+    return fake
 
 
-def test_invalid_spec_raises(tmp_path):
-    with pytest.raises(SourceError):
-        _engine(tmp_path).index("github:not-a-valid-spec")
+class TestResolveGithub:
+    def test_snapshot_identity_inner_tree_and_extracted_marker(
+        self, monkeypatch, tmp_path
+    ):
+        config = _config(tmp_path)
+        _install(monkeypatch, _FakeTransport())
+        snapshot = resolve_github("github:owner/repo", config)
+
+        assert snapshot.snapshot_id == "github:commit:" + _SHA
+        assert snapshot.commit == _SHA
+        assert snapshot.origin == "github"
+        assert snapshot.root_dir.name == f"repo-{_SHA}"
+        assert snapshot.root_dir.is_dir()
+        assert any(f.rel_path == "calc.py" for f in snapshot.files)
+
+        marker = SnapshotCache(config).raw_dir(snapshot.snapshot_id) / ".extracted"
+        assert marker.is_file()
+        assert marker.read_text(encoding="utf-8").strip() == str(snapshot.root_dir)
+
+    def test_ref_in_spec_is_passed_to_resolve_commit(self, monkeypatch, tmp_path):
+        fake = _install(monkeypatch, _FakeTransport())
+        snapshot = resolve_github("github:owner/repo@dev", _config(tmp_path))
+        assert snapshot.ref == "dev"
+        assert fake.resolve_calls
+        assert fake.resolve_calls[0] == ("owner", "repo", "dev")
+
+    def test_invalid_spec_does_not_call_transport(self, monkeypatch, tmp_path):
+        fake = _install(monkeypatch, _FakeTransport())
+        with pytest.raises(SourceError):
+            resolve_github("github:not-a-valid-spec", _config(tmp_path))
+        assert fake.resolve_calls == []
+        assert fake.fetch_calls == []
+
+    def test_git_error_is_mapped_to_source_error(self, monkeypatch, tmp_path):
+        _install(
+            monkeypatch,
+            _FakeTransport(
+                error=GitError("GitHub request failed (404) for https://example")
+            ),
+        )
+        with pytest.raises(SourceError, match="GitHub request failed") as caught:
+            resolve_github("github:owner/repo", _config(tmp_path))
+        assert isinstance(caught.value, SourceError)
+        assert not isinstance(caught.value, GitError)
+
+    def test_second_resolve_skips_fetch_archive(self, monkeypatch, tmp_path):
+        config = _config(tmp_path)
+        fake = _install(monkeypatch, _FakeTransport())
+        resolve_github("github:owner/repo", config)
+        assert len(fake.fetch_calls) == 1
+        resolve_github("github:owner/repo", config)
+        assert len(fake.fetch_calls) == 1
+
+
+class TestLatestCommit:
+    def test_returns_same_sha_as_resolve_github(self, monkeypatch, tmp_path):
+        config = _config(tmp_path)
+        _install(monkeypatch, _FakeTransport())
+        snapshot = resolve_github("github:owner/repo", config)
+        assert latest_commit("github:owner/repo", config) == snapshot.commit
+        assert latest_commit("github:owner/repo", config) == _SHA
+
+
+class TestGithubModuleSource:
+    def test_does_not_import_urllib(self):
+        source = _GITHUB_PY.read_text(encoding="utf-8")
+        assert "import urllib" not in source
+        assert "urllib." not in source
+
+    def test_drops_legacy_http_and_extract_names(self):
+        source = _GITHUB_PY.read_text(encoding="utf-8")
+        for needle in (
+            "_http_get",
+            "resolve_ref",
+            "_safe_extract",
+            "tarfile.extractall",
+        ):
+            assert needle not in source, needle

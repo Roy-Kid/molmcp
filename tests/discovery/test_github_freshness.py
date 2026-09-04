@@ -1,10 +1,11 @@
-"""GitHub ref-freshness tests (network mocked)."""
+"""GitHub ref-freshness tests (transport faked)."""
 
 from __future__ import annotations
 
 import io
-import json
 import tarfile
+
+import pytest
 
 from molmcp.discovery import DiscoveryConfig, DiscoveryEngine
 from molmcp.discovery.source import github
@@ -12,6 +13,7 @@ from molmcp.discovery.source import github
 _SHA1 = "a" * 40
 _SHA2 = "b" * 40
 _FILES = {"calc.py": "def add(a, b):\n    return a + b\n"}
+_MUL = {"calc.py": "def mul(a, b):\n    return a * b\n"}
 
 
 def _make_tarball(top: str, files: dict[str, str]) -> bytes:
@@ -25,15 +27,24 @@ def _make_tarball(top: str, files: dict[str, str]) -> bytes:
     return buf.getvalue()
 
 
-def fake_http(sha: str, files: dict[str, str]):
-    def _get(url, token=None, accept="application/vnd.github+json"):
-        if "codeload" in url:
-            return _make_tarball(f"repo-{sha}", files)
-        if "/commits/" in url:
-            return json.dumps({"sha": sha}).encode("utf-8")
-        return json.dumps({"default_branch": "main"}).encode("utf-8")
+class _FakeTransport:
+    """GitTransport stand-in: resolve_commit + fetch_archive, no sockets."""
 
-    return _get
+    def __init__(self, sha: str, files: dict[str, str] | None = None) -> None:
+        self.sha = sha
+        self.files = dict(_FILES if files is None else files)
+        self.archive = _make_tarball(f"repo-{sha}", self.files)
+
+    def resolve_commit(self, owner: str, repo: str, ref: str | None) -> str:
+        return self.sha
+
+    def fetch_archive(self, owner: str, repo: str, sha: str) -> bytes:
+        return self.archive
+
+
+def _install(monkeypatch: pytest.MonkeyPatch, fake: _FakeTransport) -> _FakeTransport:
+    monkeypatch.setattr(github, "_transport", lambda _config: fake)
+    return fake
 
 
 def _engine(tmp_path) -> DiscoveryEngine:
@@ -45,32 +56,28 @@ def test_freshness_unknown_when_not_indexed(tmp_path):
 
 
 def test_freshness_fresh_after_index(monkeypatch, tmp_path):
-    monkeypatch.setattr(github, "_http_get", fake_http(_SHA1, _FILES))
+    _install(monkeypatch, _FakeTransport(_SHA1))
     engine = _engine(tmp_path)
     engine.index("github:owner/repo")
     assert engine.check_freshness("github:owner/repo") == "fresh"
 
 
 def test_freshness_stale_when_remote_moves(monkeypatch, tmp_path):
-    monkeypatch.setattr(github, "_http_get", fake_http(_SHA1, _FILES))
+    _install(monkeypatch, _FakeTransport(_SHA1))
     engine = _engine(tmp_path)
     engine.index("github:owner/repo")
 
-    monkeypatch.setattr(github, "_http_get", fake_http(_SHA2, _FILES))
+    _install(monkeypatch, _FakeTransport(_SHA2))
     assert engine.check_freshness("github:owner/repo") == "stale"
 
 
 def test_refresh_picks_up_new_commit(monkeypatch, tmp_path):
-    monkeypatch.setattr(github, "_http_get", fake_http(_SHA1, _FILES))
+    _install(monkeypatch, _FakeTransport(_SHA1))
     engine = _engine(tmp_path)
     first = engine.index("github:owner/repo")
     assert first.snapshot.commit == _SHA1
 
-    monkeypatch.setattr(
-        github,
-        "_http_get",
-        fake_http(_SHA2, {"calc.py": "def mul(a, b):\n    return a * b\n"}),
-    )
+    _install(monkeypatch, _FakeTransport(_SHA2, _MUL))
     result = engine.refresh("github:owner/repo")
     assert result.snapshot.commit == _SHA2
     assert result.freshness == "fresh"
