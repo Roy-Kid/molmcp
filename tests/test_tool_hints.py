@@ -93,9 +93,15 @@ class TestSourceIsClean:
         "path", sorted(SRC.rglob("*.py")), ids=lambda p: str(p.name)
     )
     def test_no_module_emits_a_mount_era_tool_name(self, path: Path):
-        # Two modules state the contract by quoting the spelling it bans;
+        # Modules that state the contract by quoting the spelling it bans;
         # for them the mount-era form appearing is the point.
-        contract_files = {"naming.py", "provider.py", "server.py", "planes.py"}
+        contract_files = {
+            "naming.py",
+            "planes.py",
+            "provider.py",
+            "provider_sdk.py",
+            "server.py",
+        }
         if path.name in contract_files and path.parent.name in {
             "middleware",
             "molmcp",

@@ -13,6 +13,7 @@ from molmcp import (
 )
 from molmcp import provider as provider_module
 from molmcp.middleware import MissingAnnotationsError
+from molmcp.provider_sdk import ProviderBase
 
 
 def _server(*, provider, **kwargs):
@@ -96,6 +97,44 @@ def test_entry_point_name_is_provider_namespace_authority(monkeypatch):
     )
     failures: list[dict[str, str]] = []
     assert discover_providers(failures=failures) == []
+    assert failures == [
+        {
+            "entry_point": "declared",
+            "phase": "authority",
+            "error_type": "NamespaceMismatch",
+        }
+    ]
+
+
+def test_discover_providers_accepts_sdk_provider_base(monkeypatch):
+    """A public-SDK plane is loaded; the entry point still owns the name."""
+
+    class SdkPlane(ProviderBase):
+        name = "sdkplane"
+
+    class Matching:
+        name = "sdkplane"
+
+        @staticmethod
+        def load():
+            return SdkPlane
+
+    class Mismatched:
+        name = "declared"
+
+        @staticmethod
+        def load():
+            return SdkPlane
+
+    monkeypatch.setattr(
+        provider_module.importlib.metadata,
+        "entry_points",
+        lambda **kwargs: [Matching(), Mismatched()],
+    )
+    failures: list[dict[str, str]] = []
+    found = discover_providers(failures=failures)
+    assert [provider.name for provider in found] == ["sdkplane"]
+    assert type(found[0]) is SdkPlane
     assert failures == [
         {
             "entry_point": "declared",
