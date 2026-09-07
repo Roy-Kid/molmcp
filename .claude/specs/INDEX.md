@@ -4,7 +4,6 @@ One line per live spec. Added by `/mol:spec`, pruned by `/mol:impl`.
 
 - [retrieval-first-discovery](retrieval-first-discovery.md) — make capability retrieval the spine; demote the call graph to an optional provenance-labeled evidence feature out of the ranking path [code-complete]
 - [hierarchical-discovery-facade](hierarchical-discovery-facade.md) — OKF-style context injection facade: packages/outline/open/compose pages; codegraph is index only; ranking demoted [approved]
-- [autonomous-harness-evolution-06-episode-receipt](autonomous-harness-evolution-06-episode-receipt.md) — EpisodeReceipt local TTL log, redaction, default-off consent [approved]
 - [autonomous-harness-evolution-07-host-adapter](autonomous-harness-evolution-07-host-adapter.md) — host adapter; daily/dev bundle materialize on molmcp init [approved]
 - [autonomous-harness-evolution-08-runtime-wire](autonomous-harness-evolution-08-runtime-wire.md) — create_stack git arms, extras concat, XOR WorkerProvider [approved]
 - [autonomous-harness-evolution-09-wiki-maintain](autonomous-harness-evolution-09-wiki-maintain.md) — evolution Wiki maintainer; current hypotheses and accept/reject history [approved]
