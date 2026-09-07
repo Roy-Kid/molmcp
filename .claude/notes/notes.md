@@ -2,6 +2,79 @@
 
 Evolving architectural decisions. Appended by `/mol:note`; newest first.
 
+<!-- mol:note:topic:spec-premise-verify -->
+## 2026-09-07 — spec 引用别的模块时,必须当场核实再写进 Design
+
+autonomous-harness-evolution 那条 16 员链上,**四条 spec 的 Design 引用了并不存在
+的东西**,全部在实现阶段才炸:
+
+- spec 05:「FastMCP 4 没有 `mcp.lifespan` 属性」——它有;「`_lifespan` 可能为
+  `None`」——永不为 None;「dict 返回值需要 return 注解才有 structured content」
+  ——不需要。
+- spec 07:`resolve_bundle_source` 被定为「唯一解释入口」,却没有任何调用方,
+  `--source /不存在` 会静默降级。
+- spec 08:把 `AppConfig.cache_dir` 当成总有值——它默认 `None`,导致没配
+  `cacheDir` 的用户 harness 开箱即坏。
+- spec 12:`ActivationUnboundError` 仓里根本没有;而且 04 把未绑定状态做成了
+  不可构造(`Activation()` 直接 `TypeError("use Activation.bind")`)。
+- spec 13:`from molmcp.evaluate import evaluate`,签名 `Path -> bool`——真实符号
+  在 `molmcp.evolution.evaluate`,签名是 8 参数返回 `EvaluationReport`。
+
+共同点:这些 spec 是**一次性批量起草**的,谁都没去跑一下。
+
+**Rule**: spec 起草时凡引用另一个模块的类型名、字段、异常或签名,先
+`uv run python -c "import ...; print(inspect.signature(...))"` 核一遍,再写进
+Design。跨 spec 链尤其如此——后一条引用前一条**交付的**符号,不是前一条 spec
+里**写的**符号。
+
+<!-- mol:note:topic:golden-not-self-proving -->
+## 2026-09-07 — golden 必须是独立字面量,且必须真跑反例
+
+本链两个回归带着**恒真断言**落库,同一个模式:一个常量既喂给被测函数当输入、
+又当断言的期望值,改它两边一起动,断言永远通不掉。两次都是**执行反例控制**
+时才暴露,code review 看不出来。
+
+**Rule**: 测试与示例里的 golden 与构造输入的字面量**分开各写各的**;每个 golden
+至少跑一次「改坏 → 必须失败 → 还原」。控制项自己也要验:如果一个控制"通过"了,
+那说明该 golden 是空的,先修 golden 再说。
+
+<!-- mol:note:topic:facade-symbol-collision -->
+## 2026-09-07 — 往包门面加符号之前,先 grep 现有 `__all__`
+
+同一批 spec 里撞了三次:
+
+- spec 10 与 spec 11 都要从 `molmcp.evolution` 导出名为 `Candidate` 的东西——
+  一个是「被提议的补丁」,一个是「待评估的检出」。改名 `Challenger` 才解开。
+- spec 07 声明 `HOSTS: dict[Host, HostLayout]` 于 `host/layout.py`,spec 15 声明
+  `HOSTS: tuple[Host, ...]` 于 `host/install.py`。
+- spec 09 与 spec 10 对**同一个包**指定了不同的测试目录(10 还显式排除了 09 选的)。
+
+**Rule**: 起 spec 时若要往某个包的 `__all__` 加符号,先读那个 `__all__`,再读
+同链其它 spec 的 Files 段。撞名不是实现细节,是两个概念抢一个词,必须在 spec
+阶段解决。
+
+<!-- mol:note:topic:test-dir-prefix -->
+## 2026-09-07 — 测试目录用 `test_` 前缀镜像 `src/`
+
+仓里两种约定都有先例(`tests/discovery/` `tests/collection/` 无前缀;
+`tests/test_components/` `tests/test_provider/` 有前缀),于是 spec 09 与 10 各
+选一种、互相矛盾。已统一。
+
+**Rule**: `src/foo/bar.py` 的单测放 `tests/test_foo/test_bar.py`。一个源码包的
+测试只放一个目录,不得分散。
+
+<!-- mol:note:topic:isolation-check-imports -->
+## 2026-09-07 — 「不得依赖 X」用 AST 查 import,不要全文 grep 子串
+
+`test_wiki.py` 曾禁止 `wiki.py` 全文出现小写 `github`,结果实现被迫写成
+`_FORGE_SCHEME = "git" + "hub:"` ——而那段代码的作用恰恰是**拒绝** forge URL,
+是隔离的证据而不是违反。测试自己也得靠 `"create_" + "stack"` 躲开自己的扫描。
+钝 grep 同时过宽(命中 docstring 与拒绝逻辑)又过窄(躲不过字符串拼接)。
+
+**Rule**: 依赖隔离断言走 AST——遍历 `Import` / `ImportFrom`,把相对 import 解析
+成绝对点分路径再比。只有 `importlib.import_module("...")` 这种 AST 看不见的
+动态导入才补一条针对**点分模块路径**的文本检查。
+
 <!-- mol:note:topic:fastmcp4-lifespan -->
 ## 2026-09-07 — FastMCP 4.0.0b5 lifespan 事实（推翻 spec 05 的三条前提）
 
