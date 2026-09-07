@@ -5,9 +5,10 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 import re
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from fastmcp import FastMCP
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
 
 PROVIDER_ENTRY_POINT_GROUP = "molmcp.providers"
 PROVIDER_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")

@@ -2,28 +2,40 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.metadata
 
-from .client_config import PlaneToggle, resolve_plane_toggles
-from .collection import CollectionIndex, ContextPack, SearchHit, SourceBinding
-from .config import AppConfig, ConfigurationError, load_config
-from .mcp_provider import MolCraftsContextProvider
-from .planes import (
-    CORE_PLANE_ID,
-    PlaneInfo,
-    known_plane_ids,
-    list_plane_infos,
-    route_task,
-)
-from .provider import (
-    PROVIDER_ENTRY_POINT_GROUP,
-    Provider,
-    discover_providers,
-    provider_available,
-)
-from .server import create_plane, create_server, create_stack
-
 __version__ = importlib.metadata.version("molcrafts-molmcp")
+
+#: Public name -> the submodule that defines it. Resolution is deferred so that
+#: ``import molmcp`` does not drag ``.server`` — and through it FastMCP, the
+#: library that hosts an MCP server — into a process that only wants a leaf
+#: such as ``molmcp.provider_worker.protocol``. Membership here mirrors
+#: ``__all__`` minus ``__version__``, which is metadata rather than a module.
+_LAZY_EXPORTS: dict[str, str] = {
+    "PlaneToggle": "client_config",
+    "resolve_plane_toggles": "client_config",
+    "CollectionIndex": "collection",
+    "ContextPack": "collection",
+    "SearchHit": "collection",
+    "SourceBinding": "collection",
+    "AppConfig": "config",
+    "ConfigurationError": "config",
+    "load_config": "config",
+    "MolCraftsContextProvider": "mcp_provider",
+    "CORE_PLANE_ID": "planes",
+    "PlaneInfo": "planes",
+    "known_plane_ids": "planes",
+    "list_plane_infos": "planes",
+    "route_task": "planes",
+    "PROVIDER_ENTRY_POINT_GROUP": "provider",
+    "Provider": "provider",
+    "discover_providers": "provider",
+    "provider_available": "provider",
+    "create_plane": "server",
+    "create_server": "server",
+    "create_stack": "server",
+}
 
 __all__ = [
     "AppConfig",
@@ -50,3 +62,39 @@ __all__ = [
     "resolve_plane_toggles",
     "route_task",
 ]
+
+
+def __getattr__(name: str) -> object:
+    """Resolve a public name by importing its submodule on first use.
+
+    Args:
+        name: Attribute requested on the ``molmcp`` package.
+
+    Returns:
+        The resolved object, cached into the module globals so the import
+        happens at most once.
+
+    Raises:
+        AttributeError: If ``name`` is not one of the lazy public exports.
+            Raising here is load-bearing: CPython's ``_handle_fromlist`` only
+            falls back to importing a submodule after the package refuses the
+            attribute, which is what keeps ``from molmcp import cli`` (and
+            ``settings`` / ``provider`` / ``runtime`` / ``client_config``)
+            working.
+    """
+    module = _LAZY_EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(f".{module}", __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """List the public surface plus whatever has already been resolved.
+
+    Returns:
+        Sorted attribute names, including every entry of ``__all__`` whether
+        or not its submodule has been imported yet.
+    """
+    return sorted(set(globals()) | set(__all__))
