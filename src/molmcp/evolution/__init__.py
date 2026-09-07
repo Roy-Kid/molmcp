@@ -17,6 +17,14 @@ way a verdict reaches one. The two modules meet by duck typing — the
 wiki reads four attribute names off whatever it is handed — so neither
 type has to move when the other changes.
 
+:mod:`~molmcp.evolution.propose` is what those two feed: given the
+patterns a wiki still has open, the receipts one run left, and the
+components of the current harness bundle, it returns at most one frozen
+:class:`~molmcp.evolution.propose.Candidate` — a single pattern applied
+to a single component, with the patch and the receipt ids that
+evidenced it. It is a pure function over views the caller builds; it
+opens no file, and it never applies what it proposes.
+
 Leaf package, a sibling of :mod:`molmcp.helpers`: the standard library
 plus that helper. It does not import FastMCP, does not read settings,
 does not borrow the adoption ledger, and is not re-exported from
@@ -34,6 +42,16 @@ Re-exporting it here would advertise a fence for uses that must not have
 one.
 """
 
+from .propose import (
+    BundleView,
+    Candidate,
+    Component,
+    Pattern,
+    Receipt,
+    ReceiptsView,
+    WikiView,
+    propose,
+)
 from .receipts import (
     RECEIPT_FIELDS,
     RECEIPT_TTL_DAYS,
@@ -60,15 +78,23 @@ __all__ = [
     "RECEIPT_TTL_DAYS",
     "RECEIPT_VERSION",
     "SHARE_RECEIPTS_KEY",
+    "BundleView",
+    "Candidate",
+    "Component",
     "Consent",
     "EpisodeReceipt",
     "Maintainer",
+    "Pattern",
+    "Receipt",
     "ReceiptError",
     "ReceiptLog",
+    "ReceiptsView",
     "WikiError",
     "WikiPage",
     "WikiReceipt",
     "WikiStore",
+    "WikiView",
+    "propose",
     "redact_text",
     "render_page",
     "upload_payload",
