@@ -11,8 +11,18 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, settings
-from .client_config import install_skill, render_init
+from .client_config import render_init
 from .config import AppConfig, ConfigurationError, load_config
+from .host import (
+    HOSTS,
+    activate_dev,
+    default_write_path,
+    install_skill,
+    materialize_daily,
+    materialize_dev_index,
+    resolve_bundle_source,
+    write_adapter,
+)
 from .planes import (
     CORE_PLANE_ID,
     GONE_PLANE_IDS,
@@ -101,7 +111,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     init.add_argument(
         "host",
-        choices=["grok", "claude", "cursor", "codex"],
+        # The host list has one home: repeating it here would be a second
+        # table to keep in step with `molmcp.host.layout.HOSTS`.
+        choices=tuple(HOSTS),
         help="Host to wire (user-level skill + MCP JSON).",
     )
     init.add_argument(
@@ -124,6 +136,16 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="MCP JSON path (default: that host's user config).",
+    )
+    init.add_argument(
+        "--source",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Checkout holding the daily/ and dev/ bundles to materialize "
+            "(default: the packaged usage skill only; nothing is probed for)."
+        ),
     )
 
     info = commands.add_parser("info", help="Show registry and index coverage.")
@@ -346,8 +368,34 @@ def _route(args: argparse.Namespace) -> int:
 
 
 def _init(args: argparse.Namespace) -> int:
-    from .client_config import default_write_path
+    """Wire one host: MCP JSON, usage skill, daily bundle, adapter, dev harness.
 
+    MCP (Model Context Protocol) is the wire protocol an AI client uses to
+    call tools, so the JSON written here is that client's list of servers to
+    launch. Every other destination belongs to :mod:`molmcp.host`, whose five
+    write primitives are composed here in order rather than hidden behind a
+    facade, so each destination has exactly one visible writer.
+
+    ``--source`` is interpreted once, by ``resolve_bundle_source``, and it is
+    that resolved value — never the raw flag — that the three bundle
+    primitives receive. A checkout that is not a directory therefore fails
+    here instead of degrading silently to the packaged backend.
+
+    Args:
+        args: Parsed ``init`` arguments: the host, the plane toggles
+            (``--enable`` / ``--disable``, a *plane* being one product's MCP
+            server), ``-o/--output``, and ``--source``.
+
+    Returns:
+        ``0`` once the MCP JSON, the usage skill, and the adapter are written,
+        along with whichever daily and dev files the resolved checkout
+        supplied — none of them when there is no checkout.
+
+    Raises:
+        FileNotFoundError: If ``--source`` is not a directory.
+        ValueError: If the host or a plane toggle is unknown.
+    """
+    resolved = resolve_bundle_source(args.source)
     toggle, text = render_init(
         args.host,
         enable=args.enable,
@@ -361,10 +409,17 @@ def _init(args: argparse.Namespace) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     skill_path = install_skill(args.host)
+    daily = materialize_daily(args.host, resolved)
+    adapter_path = write_adapter(args.host)
+    stubs = materialize_dev_index(args.host, resolved)
+    dev_root = activate_dev(args.host, resolved)
     print(
         f"wrote {path}  enabled={list(toggle.enabled)}  "
         f"disabled={list(toggle.disabled)}\n"
-        f"wrote {skill_path}",
+        f"wrote {skill_path}\n"
+        f"wrote {adapter_path}, {len(daily)} daily skill file(s), "
+        f"{len(stubs)} dev command stub(s), and dev harness "
+        f"{dev_root if dev_root is not None else '(none: no checkout given)'}",
         file=sys.stderr,
     )
     return 0

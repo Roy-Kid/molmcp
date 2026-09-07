@@ -1,4 +1,17 @@
-"""Generate host MCP client configs — core always on, providers togglable."""
+"""Generate host MCP client configs — core always on, providers togglable.
+
+MCP (Model Context Protocol) is the wire protocol an AI client uses to call
+tools; a *host* is one such client, and its MCP JSON is the file listing the
+servers it should launch. This module is where that JSON body is decided, and
+the functions defined here return text rather than writing it — the ``init``
+command in :mod:`molmcp.cli` is what puts it on disk.
+
+Where the file lands, and every other file ``molmcp init`` writes, is owned
+by :mod:`molmcp.host`. The eight names imported from there below are
+re-exported as the very same objects, never copies, so callers importing them
+from here still work while the one host path table stays in
+``molmcp.host.layout``.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +20,24 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
 
+# Re-exported, not used here: ``client_config.Path`` is the attribute the
+# test suite patches to move ``Path.home()`` off the developer's real home,
+# and it must stay the one ``pathlib.Path`` object that ``molmcp.host``
+# resolves its layout tuples against — so the patch reaches both modules.
+from pathlib import Path as Path
+from typing import Any
+
+from .host import (
+    HOSTS,
+    SKILL_NAME,
+    Host,
+    default_skill_dir,
+    default_write_path,
+    install_skill,
+    layout_for,
+    skill_template,
+)
 from .planes import (
     CORE_PLANE_ID,
     GONE_PLANE_IDS,
@@ -17,10 +45,6 @@ from .planes import (
     gone_plane_message,
     list_plane_infos,
 )
-
-Host = Literal["grok", "claude", "cursor", "codex"]
-
-SKILL_NAME = "molcrafts"
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,69 +190,32 @@ def render_init(
 ) -> tuple[PlaneToggle, str]:
     """Return ``(toggle, config text)``.
 
-    ``host`` selects only where the result is meant to go; the body is the
-    same JSON for all of them.
+    The body is the same JSON for every host, so *host* is validated here and
+    used for nothing else: this function returns text, not a destination.
+    Callers get the path from :func:`~molmcp.host.default_write_path`.
+
+    Args:
+        host: A key of :data:`~molmcp.host.HOSTS`, or ``None`` to render the
+            body without naming a destination.
+        enable: Provider planes to switch back on, applied after *disable*.
+        disable: Provider planes to leave unmounted.
+        available: Plane ids to choose from; defaults to the installed ones.
+
+    Returns:
+        The resolved :class:`PlaneToggle` and the MCP JSON text to write.
+
+    Raises:
+        ValueError: If *host* is not a known host, or a plane toggle is not
+            resolvable.
     """
-    if host is not None and host not in _HOST_PATHS:
-        raise ValueError(
-            f"unknown host {host!r}; known: {', '.join(sorted(_HOST_PATHS))}"
-        )
+    if host is not None and host not in HOSTS:
+        raise ValueError(f"unknown host {host!r}; known: {', '.join(sorted(HOSTS))}")
     toggle = resolve_plane_toggles(enable=enable, disable=disable, available=available)
     return toggle, json.dumps(render_mcp_json(toggle), indent=2) + "\n"
 
 
-#: Where each host expects to find the JSON, relative to home unless noted.
-_HOST_PATHS: dict[str, tuple[str, ...]] = {
-    "claude": (".claude.json",),
-    "cursor": (".cursor", "mcp.json"),
-    "grok": (".mcp.json",),
-    "codex": (".codex", "mcp.json"),
-}
-
-#: User-level skill directory (under home) for the usage constitution.
-_HOST_SKILL_DIRS: dict[str, tuple[str, ...]] = {
-    "claude": (".claude", "skills", SKILL_NAME),
-    "cursor": (".cursor", "skills", SKILL_NAME),
-    "grok": (".grok", "skills", SKILL_NAME),
-    "codex": (".codex", "skills", SKILL_NAME),
-}
-
-
-def default_write_path(host: Host) -> Path:
-    """Conventional destination for *host*'s MCP config."""
-    if host not in _HOST_PATHS:
-        raise ValueError(
-            f"unknown host {host!r}; known: {', '.join(sorted(_HOST_PATHS))}"
-        )
-    return Path.home().joinpath(*_HOST_PATHS[host])
-
-
-def default_skill_dir(host: Host) -> Path:
-    """User-level skill directory for *host* (``SKILL.md`` lives inside)."""
-    if host not in _HOST_SKILL_DIRS:
-        raise ValueError(
-            f"unknown host {host!r}; known: {', '.join(sorted(_HOST_SKILL_DIRS))}"
-        )
-    return Path.home().joinpath(*_HOST_SKILL_DIRS[host])
-
-
-def skill_template() -> str:
-    """Usage constitution shipped with this molmcp version."""
-    from importlib.resources import files
-
-    return (files("molmcp.skill") / "SKILL.md").read_text(encoding="utf-8")
-
-
-def install_skill(host: Host) -> Path:
-    """Overwrite the managed usage skill for *host*. Only ``molmcp init`` calls this."""
-    dest_dir = default_skill_dir(host)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / "SKILL.md"
-    dest.write_text(skill_template(), encoding="utf-8")
-    return dest
-
-
 __all__ = [
+    "HOSTS",
     "Host",
     "PlaneToggle",
     "SKILL_NAME",
@@ -236,6 +223,7 @@ __all__ = [
     "default_skill_dir",
     "default_write_path",
     "install_skill",
+    "layout_for",
     "render_init",
     "render_mcp_json",
     "resolve_plane_toggles",
