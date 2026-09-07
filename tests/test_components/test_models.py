@@ -7,6 +7,7 @@ import re
 from enum import StrEnum
 
 import pytest
+
 from molmcp.components.models import (
     ALLOWED_REQUIRES,
     COMPONENT_NAME_PATTERN,
