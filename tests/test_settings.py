@@ -162,3 +162,88 @@ class TestSettingsEdit:
         data = json.loads(st.user_settings_path().read_text())
         assert data["indexWorkspace"] is False
         assert data["maxCacheBytes"] == 1048576
+
+    def test_set_harness_owner_repo_and_ref_round_trip(self, home):
+        st.set_value(st.user_settings_path(), "harness.owner", "molcrafts")
+        st.set_value(st.user_settings_path(), "harness.repo", "molmcp-harness")
+        st.set_value(st.user_settings_path(), "harness.ref", "main")
+
+        assert json.loads(st.user_settings_path().read_text()) == {
+            "harness": {
+                "owner": "molcrafts",
+                "repo": "molmcp-harness",
+                "ref": "main",
+            }
+        }
+        assert st.load_settings().harness == {
+            "owner": "molcrafts",
+            "repo": "molmcp-harness",
+            "ref": "main",
+        }
+
+    @pytest.mark.parametrize(
+        "member", ["dev", "cacheDir", "token", "daily", "telemetry"]
+    )
+    def test_set_rejects_a_harness_member_outside_the_locator(self, home, member):
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.set_value(st.user_settings_path(), f"harness.{member}", "x")
+
+        assert f"harness.{member}" in str(excinfo.value)
+        assert not st.user_settings_path().exists()
+
+
+class TestSettingsHarness:
+    """The autonomous harness locator: ``owner`` / ``repo`` / ``ref``, no more.
+
+    Completeness is a serve-time concern, so a half-filled locator has to
+    survive parsing: refusing it here would make `molmcp config set
+    harness.owner ...` — the first of three commands — fail on its own
+    output.
+    """
+
+    def test_harness_is_a_first_party_dict_setting(self):
+        assert st._SCHEMA.get("harness") is dict
+
+    def test_harness_members_are_exactly_owner_repo_and_ref(self):
+        assert st._NESTED_SCHEMA.get("harness") == frozenset({"owner", "repo", "ref"})
+
+    def test_harness_layers_merge_rather_than_replacing_one_another(
+        self, home, tmp_path
+    ):
+        assert "harness" in st._MERGED_DICTS
+        _write(st.user_settings_path(), {"harness": {"owner": "molcrafts"}})
+        project = tmp_path / "repo"
+        _write(st.project_settings_path(project), {"harness": {"ref": "v1"}})
+
+        assert st.load_settings(project).harness == {
+            "owner": "molcrafts",
+            "ref": "v1",
+        }
+
+    def test_a_partial_harness_table_is_stored_not_rejected(self, home, tmp_path):
+        _write(st.user_settings_path(), {"harness": {"owner": "molcrafts"}})
+
+        assert st.load_settings(tmp_path / "repo").harness == {"owner": "molcrafts"}
+
+    @pytest.mark.parametrize(
+        "member", ["dev", "cacheDir", "token", "daily", "telemetry"]
+    )
+    def test_a_stray_harness_member_is_rejected_by_name(self, home, tmp_path, member):
+        _write(st.user_settings_path(), {"harness": {member: "x"}})
+
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.load_settings(tmp_path / "repo")
+
+        assert f"harness.{member}" in str(excinfo.value)
+
+    def test_the_harness_did_not_smuggle_in_neighbouring_settings(self):
+        for stray in ("shareReceipts", "daily", "telemetry"):
+            assert stray not in st._SCHEMA
+
+    def test_share_receipts_is_not_a_setting(self, home, tmp_path):
+        _write(st.user_settings_path(), {"shareReceipts": True})
+
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.load_settings(tmp_path / "repo")
+
+        assert "shareReceipts" in str(excinfo.value)

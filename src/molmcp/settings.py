@@ -49,6 +49,7 @@ _SCHEMA: dict[str, type] = {
     "pythonEnv": str,
     "discoverInclude": list,
     "discoverExclude": list,
+    "harness": dict,
     "molexp": dict,
     "molq": dict,
 }
@@ -60,10 +61,14 @@ _SCHEMA: dict[str, type] = {
 _NESTED_SCHEMA: dict[str, frozenset[str]] = {
     "molq": frozenset({"database", "allowSubmit"}),
     "molexp": frozenset({"workspace"}),
+    #: Where the autonomous harness checkout comes from, and nothing else.
+    #: A cache location is ``cacheDir`` at the top level, and a credential
+    #: belongs in the environment rather than a file that can be committed.
+    "harness": frozenset({"owner", "repo", "ref"}),
 }
 
 #: Keys whose layers combine instead of replacing one another.
-_MERGED_DICTS = ("sources", "molexp", "molq")
+_MERGED_DICTS = ("sources", "harness", "molexp", "molq")
 _MERGED_LISTS = ("excludes", "knowledgeScope", "discoverInclude", "discoverExclude")
 
 
@@ -85,6 +90,18 @@ class Settings:
     python_env: str | None = None
     discover_include: tuple[str, ...] = ()
     discover_exclude: tuple[str, ...] = ()
+    #: Locator for the autonomous harness repository — the git repository of
+    #: the user's own agent tooling (skills, agents, rules, provider planes,
+    #: discovery overlays) this install may serve from. ``owner`` and ``repo``
+    #: are its GitHub coordinates (account or organization, then repository
+    #: name); ``ref`` is the branch or tag a commit is resolved from, which is
+    #: not the commit being served — that one is named by the activation
+    #: pointer under the cache directory. Stored as written, half-filled
+    #: included — the three arrive by three separate `config set` commands, so
+    #: demanding all of them here would make the first one fail on its own
+    #: output. Whether a locator is complete enough to fetch with is decided
+    #: at serve time.
+    harness: dict[str, str] = field(default_factory=dict)
     molexp: dict[str, str] = field(default_factory=dict)
     molq: dict[str, str] = field(default_factory=dict)
     #: Files that actually contributed, lowest precedence first.
@@ -103,6 +120,7 @@ class Settings:
             "pythonEnv": self.python_env,
             "discoverInclude": list(self.discover_include),
             "discoverExclude": list(self.discover_exclude),
+            "harness": dict(self.harness),
             "molexp": dict(self.molexp),
             "molq": dict(self.molq),
             "layers": [str(path) for path in self.layers],
@@ -184,6 +202,7 @@ def load_settings(project_root: str | Path | None = None) -> Settings:
         ),
         discover_include=_str_tuple(merged.get("discoverInclude")),
         discover_exclude=_str_tuple(merged.get("discoverExclude")),
+        harness={str(k): str(v) for k, v in (merged.get("harness") or {}).items()},
         molexp={str(k): str(v) for k, v in (merged.get("molexp") or {}).items()},
         molq={str(k): str(v) for k, v in (merged.get("molq") or {}).items()},
         layers=tuple(contributing),

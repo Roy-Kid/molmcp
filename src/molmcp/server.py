@@ -5,8 +5,9 @@ from __future__ import annotations
 import hmac
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -14,7 +15,15 @@ from fastmcp.server.auth import AccessToken, TokenVerifier
 from mcp.types import ToolAnnotations
 
 from .collection import CollectionIndex
-from .config import AppConfig, load_config
+from .components import (
+    Activation,
+    ComponentKind,
+    ComponentSpec,
+    GitHubTransport,
+    ImmutableGitStore,
+    load_harness_catalog,
+)
+from .config import AppConfig, ConfigurationError, load_config
 from .mcp_provider import MolCraftsContextProvider
 from .middleware import (
     MissingAnnotationsError,
@@ -37,7 +46,13 @@ from .provider import (
     Provider,
     discover_providers,
 )
-from .runtime import build_collection
+from .provider_worker.worker import WorkerProvider
+from .runtime import (
+    _session_capability_overlays,
+    build_collection,
+    resolved_cache_dir,
+)
+from .settings import load_settings
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +63,43 @@ _READ_ONLY = ToolAnnotations(
     open_world_hint=False,
 )
 
+#: Capability tokens this runtime can honor, named once here and passed as
+#: this object to :meth:`Activation.bind` and to every catalog load.
+#:
+#: A *harness* is a git repository holding the user's own agent tooling —
+#: skills, agents, rules, provider planes, discovery overlays — that this
+#: install can be pointed at. Its ``harness.toml`` *catalog* declares those
+#: pieces, and the catalog (and each named bundle inside it) may list
+#: *capability tokens*: machinery a piece needs from whatever process loads
+#: it. The two this build honors are ``provider-sdk``, the public
+#: :mod:`molmcp.provider_sdk` a checkout plane is written against, and
+#: ``harness-catalog``, the catalog format read here.
+#:
+#: This set is deliberately not ``molmcp.components.ALLOWED_REQUIRES``. That
+#: set is what a harness catalog is *allowed to declare* — the grammar. This
+#: one is what this process can *deliver* — eligibility. They happen to hold
+#: the same two tokens today; aliasing them would make a token added to the
+#: grammar tomorrow claim runtime support that nothing here implements.
+SUPPORTED_CAPABILITIES = frozenset({"provider-sdk", "harness-catalog"})
+
+#: The three settings that locate the harness repository. A locator is either
+#: all three or none of them; anything between is a configuration error rather
+#: than a value to guess at.
+_HARNESS_KEYS = ("owner", "repo", "ref")
+
+
+@dataclass(frozen=True, slots=True)
+class _Checkout:
+    """The harness commit this process serves from, already on disk.
+
+    Attributes:
+        sha: Activated commit SHA, as the pointer file records it.
+        tree: Root of that commit's tree — where ``harness.toml`` sits.
+    """
+
+    sha: str
+    tree: Path
+
 
 def create_plane(
     plane: str,
@@ -57,6 +109,7 @@ def create_plane(
     provider: Provider | None = None,
     providers: Iterable[Provider] | None = None,
     discover_entry_points: bool = True,
+    extras: Sequence[object] = (),
     enable_path_safety: bool = True,
     enable_response_limit: bool = True,
     response_limit_bytes: int = 256 * 1024,
@@ -78,6 +131,14 @@ def create_plane(
             if more than one is passed, raises — use :func:`create_stack`.
         discover_entry_points: Load the matching ``molmcp.providers`` entry
             point when *provider* is not injected.
+        extras: Capability overlays an activated harness checkout contributed.
+            A *capability overlay* is an object that layers domain knowledge
+            onto the code graph discovery builds, after that graph is
+            resolved; ``molmcp.discovery.overlay`` owns the protocol. These
+            are appended to the entry-point overlays when this call builds the
+            collection, and ignored when *collection* is injected — whoever
+            built that collection already chose its overlays. They stay opaque
+            here: naming their type would import discovery into this module.
         enable_path_safety / enable_response_limit / response_limit_bytes:
             Middleware toggles.
         validate_annotations: Fail startup if tools lack ToolAnnotations.
@@ -113,7 +174,7 @@ def create_plane(
         )
 
     if plane_id == CORE_PLANE_ID:
-        app_config, coll = _resolve_collection(collection, config)
+        app_config, coll = _resolve_collection(collection, config, extras=extras)
         auth = _environment_auth(app_config) if app_config is not None else None
 
         @asynccontextmanager
@@ -191,6 +252,62 @@ def create_stack(
     Provider tools are namespaced with the plane id (``molvis_open``). Core
     tools stay bare (``packages``, ``open``, ``route``). ``molcrafts`` cannot
     be disabled.
+
+    This is also the only composition root the activated harness checkout
+    reaches — one commit of the user's harness repository (see
+    :data:`SUPPORTED_CAPABILITIES`), already unpacked under the cache
+    directory. It has two arms, each with an owner: the *overlay* arm builds
+    the collection (it runs when *collection* is not injected), the *provider*
+    arm enumerates planes (it runs when *providers* is not injected and
+    entry-point discovery is on). Injecting one arm's answer skips that arm
+    and only that arm. Injecting both means the caller has answered
+    everything, so the harness locator is never even read.
+
+    An arm that would reach for the checkout reads
+    :func:`~molmcp.settings.load_settings` once and validates the locator. No
+    locator at all serves exactly as it did before the harness existed; a
+    partial one is a :class:`~molmcp.config.ConfigurationError` rather than a
+    guess at the missing half.
+
+    Args:
+        collection: Injected discovery collection. Supplying one answers the
+            overlay arm: nothing is built here, so no checkout overlay is
+            loaded — whoever built that collection already chose its overlays.
+        config: ``molcrafts.json`` path or :class:`AppConfig`, used for the
+            core plane and passed on to every plane mounted under it.
+        providers: Explicit planes to mount. Supplying them answers the
+            provider arm: entry points are not enumerated and the checkout
+            contributes no plane. They are still filtered by *disable*.
+        disable: Plane ids to leave unmounted. ``molcrafts`` may not be one of
+            them, and a retired plane id is refused rather than ignored.
+        discover_entry_points: Enumerate ``molmcp.providers`` entry points
+            when *providers* is not injected. ``False`` with no injected
+            providers mounts nothing — it is not a checkout-only mode.
+        enable_path_safety / enable_response_limit / response_limit_bytes:
+            Middleware toggles, applied to every plane this builds.
+        validate_annotations: Fail startup if tools lack ToolAnnotations.
+        instructions: Override the composed core's instructions string;
+            mounted planes keep their own.
+
+    Returns:
+        The core server, with every enabled plane already mounted on it.
+
+    Raises:
+        ValueError: ``molcrafts`` was disabled, or a retired plane was named.
+        ConfigurationError: The harness locator is partial, or the activated
+            commit has no tree on disk. A ``ValueError`` subclass, as are
+            ``CatalogError`` and ``OverlayLoadError``.
+        CatalogError: The checkout's ``harness.toml`` failed the catalog
+            grammar, or asks for a capability token this runtime does not
+            implement. Raised out of either arm's catalog read — see
+            :func:`~molmcp.components.load_harness_catalog`.
+        OverlayLoadError: A checkout overlay component's factory returned
+            something that is not a capability overlay — see
+            ``molmcp.runtime._session_capability_overlays``.
+        ActivationVersionError: The activation pointer file exists but is not
+            a version-1 record. Alone among these it is *not* a
+            ``ValueError``: a pointer this process cannot parse is not a
+            configuration mistake it could serve without.
     """
     skipped = {str(name).strip().lower() for name in disable if str(name).strip()}
     if CORE_PLANE_ID in skipped:
@@ -199,10 +316,28 @@ def create_stack(
         if name in GONE_PLANE_IDS:
             raise ValueError(gone_plane_message(name))
 
+    build_overlays = collection is None
+    enumerate_planes = providers is None and discover_entry_points
+    plane_config: AppConfig | str | Path | None = config
+    checkout: _Checkout | None = None
+    if (build_overlays or enumerate_planes) and _harness_locator() is not None:
+        # Resolving here rather than in _activated_checkout keeps the cache
+        # root the *same* already-resolved root the collection indexes under.
+        plane_config = _resolve_config(config)
+        checkout = _activated_checkout(plane_config)
+
+    extras: tuple[object, ...] = ()
+    if build_overlays and checkout is not None:
+        extras = _session_capability_overlays(
+            _checkout_components(checkout, ComponentKind.OVERLAY),
+            checkout.tree,
+        )
+
     parent = create_plane(
         CORE_PLANE_ID,
         collection=collection,
-        config=config,
+        config=plane_config,
+        extras=extras,
         discover_entry_points=False,
         enable_path_safety=enable_path_safety,
         enable_response_limit=enable_response_limit,
@@ -210,23 +345,36 @@ def create_stack(
         validate_annotations=validate_annotations,
         instructions=instructions or _stack_instructions(),
     )
-    if providers is None:
-        if not discover_entry_points:
-            mounted: list[Provider] = []
-        else:
-            mounted = [
-                p
-                for p in discover_providers(only_available=True)
-                if p.name not in skipped
-            ]
+    if providers is not None:
+        mounted: list[Provider] = [p for p in providers if p.name not in skipped]
+    elif not enumerate_planes:
+        mounted = []
     else:
-        mounted = [p for p in providers if p.name not in skipped]
+        workers = _checkout_planes(checkout)
+        from_checkout = {worker.name for worker in workers}
+        # One enumeration, and the same one this arm has always used.
+        # ``only_available=True`` drops a plane whose optional upstream
+        # package is not installed — precisely the plane a checkout is there
+        # to supply — and enumerating twice would construct every entry-point
+        # provider class a second time on every serve.
+        mounted = [
+            p
+            for p in (
+                *workers,
+                *(
+                    plane
+                    for plane in discover_providers(only_available=True)
+                    if plane.name not in from_checkout
+                ),
+            )
+            if p.name not in skipped
+        ]
 
     for provider in mounted:
         child = create_plane(
             provider.name,
             provider=provider,
-            config=config,
+            config=plane_config,
             discover_entry_points=False,
             enable_path_safety=enable_path_safety,
             enable_response_limit=enable_response_limit,
@@ -310,12 +458,189 @@ def _register_core_routing(mcp: FastMCP) -> None:
 def _resolve_collection(
     collection: CollectionIndex | None,
     config: AppConfig | str | Path | None,
+    *,
+    extras: Sequence[object] = (),
 ) -> tuple[AppConfig | None, CollectionIndex]:
     if collection is not None:
         app_config = _resolve_config(config) if config is not None else None
         return app_config, collection
     app_config = _resolve_config(config)
-    return app_config, build_collection(app_config)
+    return app_config, build_collection(app_config, extras=extras)
+
+
+def _harness_locator() -> dict[str, str] | None:
+    """Read the harness repository locator, or ``None`` when it is unset.
+
+    Settings are read once per ``create_stack``, rooted at the working
+    directory the way every other caller reads them: a bare ``load_settings()``
+    would hide a project's ``.molmcp/settings.json`` layer, so a locator split
+    across the user and project files would look incomplete and be rejected.
+
+    Returns:
+        The three locator values, or ``None`` when none of them is set — which
+        is the un-harnessed configuration, not a failure. Serving needs to
+        know only *that* a harness was named: which commit to serve comes from
+        the activation pointer, so ``owner`` / ``repo`` / ``ref`` identify the
+        repository to whatever later fetches from it, and no caller on this
+        path reads their values.
+
+    Raises:
+        ConfigurationError: Some but not all of the three keys are set. The
+            message names the missing ones. Filling them in from a default
+            would fetch code from a repository nobody named.
+    """
+    harness = load_settings(Path.cwd()).harness
+    present = {
+        key: value
+        for key in _HARNESS_KEYS
+        if (value := str(harness.get(key, "")).strip())
+    }
+    if not present:
+        return None
+    missing = [key for key in _HARNESS_KEYS if key not in present]
+    if missing:
+        named = ", ".join(f"harness.{key}" for key in missing)
+        raise ConfigurationError(
+            f"the harness locator is incomplete: {named} "
+            f"{'is' if len(missing) == 1 else 'are'} not set. Set "
+            f"{'it' if len(missing) == 1 else 'them'} with `molmcp config set "
+            f"harness.<key> <value>`, or clear the harness settings to serve "
+            f"without a checkout."
+        )
+    return present
+
+
+def _activated_checkout(config: AppConfig | str | Path | None) -> _Checkout | None:
+    """Bind the activation pointer and return the tree it points at.
+
+    Serving is a read of the pointer, never a write to it: this binds, reads
+    ``current``, and stops. Staging, promoting, and fetching a commit belong to
+    the commands that were asked to change what is activated.
+
+    Args:
+        config: Application configuration — an :class:`AppConfig`, or anything
+            :func:`~molmcp.config.load_config` accepts, which is resolved
+            first; :func:`create_stack` passes one already resolved. Its
+            resolved cache root — the same one discovery caches under, already
+            resolved against the workspace and any ``--config`` override, and
+            falling back to the default root when no ``cacheDir`` is set —
+            holds the store at ``<cache>/harness`` and the pointer beside it
+            at ``<cache>/harness.pointer``.
+
+    Returns:
+        The activated checkout, or ``None`` when nothing is activated yet.
+        Nothing activated serves exactly like an unset locator.
+
+    Raises:
+        ConfigurationError: The pointer names a commit with no published tree.
+            A missing tree is named, not silently re-fetched: serving a
+            different commit than the one that was activated is the one
+            outcome nobody asked for.
+        ActivationVersionError: The pointer file exists and is not a version-1
+            activation record (bad JSON, unknown version, missing fields).
+            Raised by :meth:`Activation.bind`; a *missing* file is not an
+            error, it is the empty record that returns ``None`` above.
+    """
+    root = resolved_cache_dir(_resolve_config(config))
+    store = ImmutableGitStore(root=root / "harness", transport=GitHubTransport())
+    activation = Activation.bind(
+        root / "harness.pointer",
+        store=store,
+        supported_capabilities=SUPPORTED_CAPABILITIES,
+    )
+    current = activation.current
+    if current is None:
+        return None
+    if not store.has(current):
+        raise ConfigurationError(
+            f"the activated harness commit {current} has no published tree "
+            f"under {root / 'harness'}. Publish and activate it again, or "
+            f"clear the activation pointer."
+        )
+    return _Checkout(sha=current, tree=store.tree_path(current))
+
+
+def _checkout_components(
+    checkout: _Checkout, kind: ComponentKind
+) -> tuple[ComponentSpec, ...]:
+    """Read the checkout's catalog and return every component of one *kind*.
+
+    The catalog is the only inventory of the tree; the tree is never globbed,
+    because a file nobody declared is not a component. Each arm reads it for
+    itself — same tree, same SHA, same capability set — so an arm that does not
+    run never pays for a catalog it would not use.
+
+    Args:
+        checkout: The activated checkout to read ``harness.toml`` from.
+        kind: Component kind to keep.
+
+    Returns:
+        The matching components, in catalog order.
+
+    Raises:
+        CatalogError: The catalog is malformed, or requires a capability this
+            runtime does not support.
+    """
+    catalog = load_harness_catalog(checkout.tree, checkout.sha, SUPPORTED_CAPABILITIES)
+    return tuple(spec for spec in catalog.components if spec.kind is kind)
+
+
+def _checkout_planes(checkout: _Checkout | None) -> list[Provider]:
+    """Adapt the checkout's provider components into mountable planes.
+
+    Each one becomes a :class:`~molmcp.provider_worker.worker.WorkerProvider`
+    named by the component's ``name`` — the plane id clients see and the name
+    the entry-point comparison is made on. The component ``id``
+    (``provider.demo``) is a catalog key, not a plane id; mounting under it
+    would namespace the plane's tools as ``provider.demo_open``.
+
+    Args:
+        checkout: The activated checkout, or ``None`` when there is none.
+
+    Returns:
+        One plane per provider component; empty when nothing is activated.
+    """
+    if checkout is None:
+        return []
+    return [
+        WorkerProvider(
+            # A provider component always carries an entrypoint — ComponentSpec
+            # refuses to be built without one — and it stays a string here: the
+            # checkout is imported in the child process, never in this one.
+            name=spec.name,
+            entrypoint=str(spec.entrypoint),
+            path=_import_root(checkout.tree, spec.path),
+        )
+        for spec in _checkout_components(checkout, ComponentKind.PROVIDER)
+    ]
+
+
+def _import_root(tree: Path, path: str) -> Path:
+    """Resolve a component path to the directory its module is imported from.
+
+    A component may point at either the module file (``providers/demo/plane.py``)
+    or the package directory that holds it (``providers/demo``). Both name the
+    same import root, so a directory is used as it stands and a file hands back
+    its parent.
+
+    The overlay arm resolves its own import root the other way — always the
+    parent, whatever the path names (``molmcp.runtime`` /
+    ``_session_capability_overlays``). The two rules can only disagree when a
+    component's ``path`` names a directory, and which one is right there
+    depends on whether its ``entrypoint`` spells the module relative to that
+    directory or to the directory above it, which the catalog grammar does not
+    settle. If a real catalog's provider entrypoint ever fails to import, this
+    difference is the first thing to check.
+
+    Args:
+        tree: Root of the activated checkout.
+        path: The component's tree-relative POSIX path.
+
+    Returns:
+        The directory to import the component from.
+    """
+    candidate = tree / path
+    return candidate if candidate.is_dir() else candidate.parent
 
 
 def _resolve_provider(
