@@ -2,6 +2,63 @@
 
 Evolving architectural decisions. Appended by `/mol:note`; newest first.
 
+<!-- mol:note:topic:fastmcp4-lifespan -->
+## 2026-09-07 — FastMCP 4.0.0b5 lifespan 事实（推翻 spec 05 的三条前提）
+
+Spec 05 的 Design 写了三条关于 FastMCP 4 的断言，实测**全错**。它们已在
+`provider_worker/` 的 docstring 里改正，但 06–16 的 spec 正文可能仍带着旧
+说法——照抄前先核对源码。
+
+1. **`mcp.lifespan` 存在**，是继承来的 `AggregateProvider.lifespan`
+   (`fastmcp/server/providers/aggregate.py:345`)：无参 `@asynccontextmanager`，
+   聚合的是**被 mount 的 provider** 的 lifespan。它与构造函数 `lifespan=`
+   存进 `_lifespan` 的那个 callable 是**两个不同对象、不同签名**。
+   设计上刻意不用它——但不能说它「不存在」。
+2. **`FastMCP._lifespan` 永不为 `None`**：`__init__` 在未传 `lifespan=` 时
+   回落到 `default_lifespan`（`server/server.py:404-408`）。任何
+   `if previous is None` 分支都是防御性死代码，写注释说明，别当正常路径。
+3. **dict 返回值无需 return 注解**即可产出 structured content
+   （实测 `ToolResult.structured_content == {"text": "ping"}` 两种情形一致）。
+   所以 worker 线协议**不带** return 字段——别为它加。
+
+**Rule**: 引用 FastMCP 私有属性前，先读
+`.venv/.../fastmcp/server/` 的对应源码核实；`_lifespan_manager`
+(`server/mixins/lifespan.py:169`) 做的是
+`enter_async_context(self._lifespan(self))` 并把 yield 值缓存成
+`_lifespan_result`——**任何包装 `_lifespan` 的代码必须把前一个 lifespan 的
+yield 值透传出去**，吞掉它就等于悄悄拿走了服务器的应用状态。
+
+<!-- mol:note:topic:worker-child-isolation -->
+## 2026-09-07 — worker 子进程的 FastMCP 隔离边界在 provider.py
+
+`provider_sdk.py` 早就把 `FastMCP` 放在 `TYPE_CHECKING` 下，但它
+`from .provider import Provider`，而 `provider.py` 当时是**模块级**
+`from fastmcp import FastMCP`——于是 `import molmcp.provider_sdk` 照样把整个
+FastMCP 栈拖进任何进程。spec 05 的 child 必须 import `ProviderBase`，
+AC-002（子进程无 fastmcp）因此不可能成立。已把那一行移到 `TYPE_CHECKING`
+下（行为不变：该文件有 `from __future__ import annotations`，`FastMCP` 只出现在
+docstring 与被字符串化的 `register` 注解里）。
+
+**Rule**: `molmcp.provider_sdk` 及其依赖链（`provider.py`）是**子进程可安全
+import 的边界**——不得在这条链上新增模块级 FastMCP / `molmcp.server` import。
+`molmcp/__init__.py` 与 `provider_worker/__init__.py` 是 PEP 562 惰性门面，
+`__getattr__` **必须**对未知名抛 `AttributeError`：CPython 的
+`_handle_fromlist` 靠它回落到子模块导入，`from molmcp import cli/settings/
+runtime/client_config` 等十余处调用点依赖这一点。
+
+<!-- mol:note:topic:ruff-first-party-cache -->
+## 2026-09-07 — ruff 的 first-party 判定随文件存在与否翻转
+
+ruff 的 isort 按**目标模块文件是否存在于 `src/` 下**判 first-party。于是
+RED 阶段写的 import 块（模块尚不存在 → 判 third-party）会在 GREEN 之后变成
+I001。更糟的是 `.ruff_cache` 会掩盖它：751e874 就这样带着
+`tests/test_components/test_models.py` 的 I001 落库，本地暖缓存全绿而**干净
+检出必然挂 CI lint**（已修，见 fb4c348）。
+
+**Rule**: 提交前用 `rm -rf .ruff_cache && uv run ruff check src tests` 复核
+——CI 与新克隆跑的都是冷缓存。TDD 写测试时，先造出目标模块的空壳或事后
+`ruff check --fix`，别相信 RED 阶段的 lint 结果。
+
 ## 2026-08-02 — molvis provider = 工作台原语,不是接口翻译层
 
 molmcp 对 molvis 的角色定位:**把「活着的 Python 会话」借给 agent,而不是替

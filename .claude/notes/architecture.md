@@ -66,7 +66,7 @@ _Generated 2026-08-09 by /mol:map._
 
 ### Public surface
 
-**`molmcp/__init__.py` `__all__`** (verbatim): `AppConfig`, `CollectionIndex`, `ConfigurationError`, `ContextPack`, `MolCraftsContextProvider`, `PROVIDER_ENTRY_POINT_GROUP`, `PlaneInfo`, `PlaneToggle`, `Provider`, `SearchHit`, `SourceBinding`, `__version__`, `create_plane`, `create_server`, `discover_providers`, `known_plane_ids`, `list_plane_infos`, `load_config`, `provider_available`, `resolve_plane_toggles`, `route_task`. `__version__ = "0.5.0"`.
+**`molmcp/__init__.py` `__all__`** (verbatim): `AppConfig`, `CollectionIndex`, `ConfigurationError`, `ContextPack`, `MolCraftsContextProvider`, `PROVIDER_ENTRY_POINT_GROUP`, `PlaneInfo`, `PlaneToggle`, `Provider`, `SearchHit`, `SourceBinding`, `__version__`, `create_plane`, `create_server`, `discover_providers`, `known_plane_ids`, `list_plane_infos`, `load_config`, `provider_available`, `resolve_plane_toggles`, `route_task`. `__version__` comes only from `importlib.metadata.version("molcrafts-molmcp")` — no literal in the source. Since 2026-09-07 every name except `__version__` resolves through a PEP 562 `__getattr__`, so the module body imports no submodule.
 
 **Entry points** (`pyproject.toml`, group `molmcp.providers`):
 
