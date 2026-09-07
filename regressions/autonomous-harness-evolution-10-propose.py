@@ -27,6 +27,11 @@ containment. The whole patch is pinned beside it, spelled out rather than
 rebuilt with ``difflib``, so that a change to the header or the hunk range
 fails here instead of agreeing with itself.
 
+No golden is reused as an input. The views below spell their own strings
+out, so editing ``_PATTERN_ID`` or ``_COMPONENT_ID`` changes only what is
+expected and the script fails; a shared constant would have moved both sides
+of every comparison at once and pinned nothing.
+
 Two further properties are checked because they are the ones most likely to
 rot into something that still looks right:
 
@@ -79,7 +84,10 @@ from molmcp.evolution import (
     propose,
 )
 
-# In-repo goldens, 2026-09-07, no third-party oracle.
+# In-repo goldens, 2026-09-07, no third-party oracle. Every literal below
+# is an *expectation*. None of them is reused to build an input: the views
+# further down spell their own strings out, so editing a golden here makes
+# this script fail rather than quietly agree with itself.
 _PATTERN_ID = "skill-missing-warning"
 _COMPONENT_ID = "daily-pack-skill"
 _PATH = "skills/daily/pack.md"
@@ -98,29 +106,42 @@ _EXPECTED_DIFF = (
     "+Always call packages before coding\n"
 )
 
-#: The inputs, as the spec's happy path describes them. The insert lives on
-#: the pattern, the body on the component, and the binding on the receipt.
-_INSERT = "Always call packages before coding"
-_KIND = "skill"
-_TEXT = "# daily pack\n"
-_RECEIPT_ID = "run-42"
+#: Goldens for the substring trap: the pattern that must win, the receipt it
+#: must cite, the line it must add, and the two the skipped definition would
+#: have contributed.
+_PROSE_PATTERN_ID = "skill-prose-mention"
+_PROSE_REFS = ("run-44",)
+_PROSE_ADDED_LINE = "+Always call def name( before coding"
+_SKIPPED_PATTERN_ID = "skill-helper-def"
+_SKIPPED_LINE = "+def pack(items):"
 
-_COMPONENT = Component(
-    component_id=_COMPONENT_ID,
-    kind=_KIND,
-    path=_PATH,
-    text=_TEXT,
+# Inputs, as the spec's happy path describes them: the insert lives on the
+# pattern, the body on the component, and the binding on the receipt. These
+# are literals, not references to the goldens above.
+_BUNDLE = BundleView(
+    components=(
+        Component(
+            component_id="daily-pack-skill",
+            kind="skill",
+            path="skills/daily/pack.md",
+            text="# daily pack\n",
+        ),
+    ),
 )
-_BUNDLE = BundleView(components=(_COMPONENT,))
 _WIKI = WikiView(
-    open_patterns=(Pattern(pattern_id=_PATTERN_ID, insert=_INSERT),),
+    open_patterns=(
+        Pattern(
+            pattern_id="skill-missing-warning",
+            insert="Always call packages before coding",
+        ),
+    ),
 )
 _RECEIPTS = ReceiptsView(
     receipts=(
         Receipt(
-            receipt_id=_RECEIPT_ID,
-            pattern_id=_PATTERN_ID,
-            component_id=_COMPONENT_ID,
+            receipt_id="run-42",
+            pattern_id="skill-missing-warning",
+            component_id="daily-pack-skill",
         ),
     ),
 )
@@ -131,35 +152,31 @@ _EMPTY_WIKI = WikiView(open_patterns=())
 
 #: The substring trap, in wiki order: a real definition first, then prose
 #: that merely mentions one. The second must win.
-_DEF_PATTERN_ID = "skill-helper-def"
-_DEF_INSERT = "def pack(items):"
-_DEF_RECEIPT_ID = "run-43"
-_PROSE_PATTERN_ID = "skill-prose-mention"
-_PROSE_INSERT = "Always call def name( before coding"
-_PROSE_RECEIPT_ID = "run-44"
-_PROSE_ADDED_LINE = "+Always call def name( before coding"
-_PROSE_REFS = ("run-44",)
-
 _TRAP_WIKI = WikiView(
     open_patterns=(
-        Pattern(pattern_id=_DEF_PATTERN_ID, insert=_DEF_INSERT),
-        Pattern(pattern_id=_PROSE_PATTERN_ID, insert=_PROSE_INSERT),
+        Pattern(pattern_id="skill-helper-def", insert="def pack(items):"),
+        Pattern(
+            pattern_id="skill-prose-mention",
+            insert="Always call def name( before coding",
+        ),
     ),
 )
-_DEF_ONLY_WIKI = WikiView(
-    open_patterns=(Pattern(pattern_id=_DEF_PATTERN_ID, insert=_DEF_INSERT),),
-)
+
+#: The same definition pattern with nothing behind it, so the skip is shown
+#: on its own rather than inferred from which pattern won.
+_DEF_ONLY_WIKI = WikiView(open_patterns=_TRAP_WIKI.open_patterns[:1])
+
 _TRAP_RECEIPTS = ReceiptsView(
     receipts=(
         Receipt(
-            receipt_id=_DEF_RECEIPT_ID,
-            pattern_id=_DEF_PATTERN_ID,
-            component_id=_COMPONENT_ID,
+            receipt_id="run-43",
+            pattern_id="skill-helper-def",
+            component_id="daily-pack-skill",
         ),
         Receipt(
-            receipt_id=_PROSE_RECEIPT_ID,
-            pattern_id=_PROSE_PATTERN_ID,
-            component_id=_COMPONENT_ID,
+            receipt_id="run-44",
+            pattern_id="skill-prose-mention",
+            component_id="daily-pack-skill",
         ),
     ),
 )
@@ -269,8 +286,8 @@ def _check_substring_trap() -> None:
     candidate = _proposed(_TRAP_WIKI, _TRAP_RECEIPTS, _BUNDLE)
 
     _require(
-        candidate.pattern_id != _DEF_PATTERN_ID,
-        f"the function-definition pattern {_DEF_PATTERN_ID!r} was proposed",
+        candidate.pattern_id != _SKIPPED_PATTERN_ID,
+        f"the function-definition pattern {_SKIPPED_PATTERN_ID!r} was proposed",
     )
     _require(
         candidate.pattern_id == _PROSE_PATTERN_ID,
@@ -287,19 +304,19 @@ def _check_substring_trap() -> None:
         f"the patch has no whole line {_PROSE_ADDED_LINE!r}; it holds {lines!r}",
     )
     _require(
-        _DEF_INSERT not in candidate.unified_diff,
-        f"the patch carries the skipped definition {_DEF_INSERT!r}",
+        _SKIPPED_LINE not in lines,
+        f"the patch adds the skipped definition {_SKIPPED_LINE!r}",
     )
 
     skipped = propose(_DEF_ONLY_WIKI, _TRAP_RECEIPTS, _BUNDLE)
     _require(
         skipped is None,
-        f"a skill insert adding {_DEF_INSERT!r} proposed {skipped!r}, not None",
+        f"a skill insert adding {_SKIPPED_LINE!r} proposed {skipped!r}, not None",
     )
 
     print(f"two patterns -> {candidate.pattern_id!r}")
     print(f"rationale_refs={candidate.rationale_refs!r}")
-    print(f"{_DEF_INSERT!r} alone on a skill -> {skipped!r}")
+    print(f"{_SKIPPED_LINE!r} alone on a skill -> {skipped!r}")
 
 
 def main() -> int:
