@@ -33,6 +33,21 @@ and the single reason why. Four readings, compared one at a time and
 never summed into a score. It moves no pointer — the report is a
 verdict, and promoting on one belongs to whoever holds the pointer.
 
+:mod:`~molmcp.evolution.promote` is who holds it. A
+:class:`~molmcp.evolution.promote.PromotionRequest` pairs one full
+commit identity with the report that judged it;
+:class:`~molmcp.evolution.promote.GatePolicy` rules on it from an
+owner/bot/other table and nothing else — no network, no credential, no
+forge. :class:`~molmcp.evolution.promote.Promoter` then does the one
+thing the ruling earns: a low-risk change is staged and promoted on an
+injected, duck-typed pointer machine; a high-risk one is only parked in
+a private ``canary.json`` with the pointer left alone; a refused one
+moves nothing. Its ledger's rule for undoing an activation is that a
+``rolled_back`` row consumes the previous slot, so the current
+activation is the last ``activated`` row with no ``rolled_back`` row
+after it — never a pairing by report id, which would re-activate a
+generation that had already been withdrawn.
+
 Note the two ``C`` names this façade carries.
 :class:`~molmcp.evolution.propose.Candidate` is a proposed patch;
 :class:`~molmcp.evolution.evaluate.Challenger` is the checkout under
@@ -79,6 +94,19 @@ from .evaluate import (
     ReplayFn,
     evaluate,
 )
+from .promote import (
+    PROMOTER_STATE_VERSION,
+    ApplyOutcome,
+    ApplyResult,
+    AuthorKind,
+    GateDecision,
+    GatePolicy,
+    HistoryEntry,
+    Promoter,
+    PromoterError,
+    PromotionRequest,
+    Risk,
+)
 from .propose import (
     BundleView,
     Candidate,
@@ -118,6 +146,7 @@ __all__ = [
     "DROP_TOKENS",
     "DROP_TOOL_ERRORS",
     "NO_PRACTICAL_GAIN",
+    "PROMOTER_STATE_VERSION",
     "RECEIPT_FIELDS",
     "RECEIPT_TTL_DAYS",
     "RECEIPT_VERSION",
@@ -127,6 +156,9 @@ __all__ = [
     "WORSE_LATENCY",
     "WORSE_TOKENS",
     "WORSE_TOOL_ERRORS",
+    "ApplyOutcome",
+    "ApplyResult",
+    "AuthorKind",
     "BundleView",
     "Candidate",
     "Challenger",
@@ -138,14 +170,21 @@ __all__ = [
     "EvalCase",
     "EvaluationError",
     "EvaluationReport",
+    "GateDecision",
+    "GatePolicy",
+    "HistoryEntry",
     "Maintainer",
     "Metrics",
     "Pattern",
+    "Promoter",
+    "PromoterError",
+    "PromotionRequest",
     "Receipt",
     "ReceiptError",
     "ReceiptLog",
     "ReceiptsView",
     "ReplayFn",
+    "Risk",
     "WikiError",
     "WikiPage",
     "WikiReceipt",
