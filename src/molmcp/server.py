@@ -101,6 +101,71 @@ class _Checkout:
     tree: Path
 
 
+def _create_core_plane(
+    *,
+    collection: CollectionIndex | None,
+    config: AppConfig | str | Path | None,
+    extras: Sequence[object],
+    enable_path_safety: bool,
+    enable_response_limit: bool,
+    response_limit_bytes: int,
+    validate_annotations: bool,
+    instructions: str | None,
+) -> FastMCP:
+    """Assemble the ``molcrafts`` core plane and its collection lifespan.
+
+    The core is the one plane that owns a discovery collection rather than a
+    product's tools, so it is also the one that needs a lifespan: the
+    collection is opened when the server starts and closed when it stops, and
+    that ``finally`` is the only place either happens.
+
+    Args:
+        collection: Injected collection (tests, embedding). When ``None`` the
+            collection is built from *config*.
+        config: ``molcrafts.json`` path or :class:`~molmcp.config.AppConfig`.
+        extras: Session capability overlays concatenated after the entry-point
+            ones. Empty for a focused core plane.
+        enable_path_safety: Attach the path-safety middleware.
+        enable_response_limit: Attach the response-limit middleware.
+        response_limit_bytes: Ceiling that middleware enforces.
+        validate_annotations: Fail startup if a tool lacks ToolAnnotations.
+        instructions: Override the default core instructions.
+
+    Returns:
+        The core :class:`FastMCP` server, tools registered and validated.
+    """
+    app_config, coll = _resolve_collection(collection, config, extras=extras)
+    auth = _environment_auth(app_config) if app_config is not None else None
+
+    @asynccontextmanager
+    async def lifespan(_server):
+        coll.start()
+        try:
+            yield {}
+        finally:
+            coll.close()
+
+    runtime_status: dict[str, object] = {
+        "plane": CORE_PLANE_ID,
+        "transport": (
+            app_config.server.transport if app_config is not None else "injected"
+        ),
+    }
+    mcp = _base_server(
+        CORE_PLANE_ID,
+        instructions=instructions or _molcrafts_instructions(),
+        auth=auth,
+        lifespan=lifespan,
+        enable_path_safety=enable_path_safety,
+        enable_response_limit=enable_response_limit,
+        response_limit_bytes=response_limit_bytes,
+    )
+    MolCraftsContextProvider(coll, runtime_status).register(mcp)
+    _register_core_routing(mcp)
+    _validate(mcp, validate_annotations, plane_id=CORE_PLANE_ID)
+    return mcp
+
+
 def create_plane(
     plane: str,
     *,
@@ -174,36 +239,16 @@ def create_plane(
         )
 
     if plane_id == CORE_PLANE_ID:
-        app_config, coll = _resolve_collection(collection, config, extras=extras)
-        auth = _environment_auth(app_config) if app_config is not None else None
-
-        @asynccontextmanager
-        async def lifespan(_server):
-            coll.start()
-            try:
-                yield {}
-            finally:
-                coll.close()
-
-        runtime_status: dict[str, object] = {
-            "plane": plane_id,
-            "transport": (
-                app_config.server.transport if app_config is not None else "injected"
-            ),
-        }
-        mcp = _base_server(
-            plane_id,
-            instructions=instructions or _molcrafts_instructions(),
-            auth=auth,
-            lifespan=lifespan,
+        return _create_core_plane(
+            collection=collection,
+            config=config,
+            extras=extras,
             enable_path_safety=enable_path_safety,
             enable_response_limit=enable_response_limit,
             response_limit_bytes=response_limit_bytes,
+            validate_annotations=validate_annotations,
+            instructions=instructions,
         )
-        MolCraftsContextProvider(coll, runtime_status).register(mcp)
-        _register_core_routing(mcp)
-        _validate(mcp, validate_annotations, plane_id=plane_id)
-        return mcp
 
     # Provider plane — one product, bare tool names, server name = plane id.
     resolved = _resolve_provider(
