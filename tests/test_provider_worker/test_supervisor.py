@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from _ast_checks import reads_environment
 
 from molmcp.provider_worker import supervisor as supervisor_module
 
@@ -137,18 +138,6 @@ def _answer(process: _FakeProcess, **payload: object) -> str:
     """A child reply to the frame just written, echoing its call id back."""
     last = _sent(process)[-1]
     return json.dumps({"protocol": 1, "id": last["id"], **payload}) + "\n"
-
-
-def _reads_environment(tree: ast.AST) -> bool:
-    """True if the module reads ``os.environ`` or ``os.getenv`` anywhere."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv"}:
-            value = node.value
-            if isinstance(value, ast.Name) and value.id == "os":
-                return True
-        if isinstance(node, ast.Name) and node.id == "getenv":
-            return True
-    return False
 
 
 class TestSupervisor:
@@ -285,4 +274,4 @@ class TestSupervisor:
     def test_supervisor_never_reads_the_environment(self) -> None:
         source = Path(supervisor_module.__file__).read_text(encoding="utf-8")
 
-        assert not _reads_environment(ast.parse(source))
+        assert not reads_environment(ast.parse(source))

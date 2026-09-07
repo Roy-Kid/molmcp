@@ -31,7 +31,7 @@ from .planes import (
     list_plane_infos,
     route_task,
 )
-from .runtime import build_collection
+from .runtime import build_collection, resolved_cache_dir
 from .server import create_plane, create_stack
 
 
@@ -549,9 +549,7 @@ def _cache(args: argparse.Namespace) -> int:
 
     vacuum_report: dict[str, Any] | None = None
     config = _load(args)
-    discovery = DiscoveryConfig(
-        cache_dir=config.cache_dir or DiscoveryConfig().cache_dir
-    )
+    discovery = DiscoveryConfig(cache_dir=resolved_cache_dir(config))
     gc_report: dict[str, Any] | None = None
     if args.gc:
         gc_report = SnapshotCache(discovery).collect_out_of_scope(

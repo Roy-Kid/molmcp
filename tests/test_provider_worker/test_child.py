@@ -23,6 +23,8 @@ import threading
 from collections.abc import Iterator
 from pathlib import Path
 
+from _ast_checks import reads_environment
+
 from molmcp.provider_worker.protocol import decode, encode_invoke, encode_shutdown
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -159,18 +161,6 @@ def _string_constants(tree: ast.Module) -> set[str]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
-
-
-def _reads_environment(tree: ast.Module) -> bool:
-    """Whether the child reads ``os.environ`` / ``os.getenv`` at all."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv"}:
-            value = node.value
-            if isinstance(value, ast.Name) and value.id == "os":
-                return True
-        if isinstance(node, ast.Name) and node.id == "getenv":
-            return True
-    return False
 
 
 class TestChild:
@@ -323,7 +313,7 @@ class TestChild:
         source = _source()
         assert "os.environ" not in source
         assert "os.getenv" not in source
-        assert not _reads_environment(ast.parse(source))
+        assert not reads_environment(ast.parse(source))
 
     def test_source_never_builds_a_json_schema(self):
         """Only signature facts travel; FastMCP owns the schema, in the parent."""

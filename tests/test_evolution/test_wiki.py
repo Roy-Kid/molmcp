@@ -16,10 +16,16 @@ independently writable field is a second truth to keep in sync.
 ``molmcp.helpers.fence_untrusted`` rather than a second copy of the marker.
 Persisting the wrapper would make the fence part of the data it guards.
 
-*Runtime cannot see this package.* The isolation checks at the bottom read
-file text and grep it. They do not boot the server stack, and this module
-never names its factory, because a test that starts the thing it claims is
-absent proves the opposite.
+*Runtime cannot see this package.* The isolation checks at the bottom are
+static and read imports, not prose: a dependency is what a module imports,
+and a substring scan both over- and under-approximates that. A scan for
+``github`` fails the file whose regex refuses a forge URL — the code that
+refuses the scheme has to name it — and still passes a file that reaches
+the source module through ``importlib.import_module``. So the checks walk
+the AST for the dependency and keep one text check for the dotted path a
+dynamic import would hide. They never boot the server stack, and the same
+walk is turned on this file, because a test that starts the thing it
+claims is absent proves the opposite.
 
 Nothing here reads a clock, the environment, or a user cache: the store root
 is always ``tmp_path / "wiki"``, and every sha and pointer is a literal.
@@ -27,6 +33,7 @@ is always ``tmp_path / "wiki"``, and every sha and pointer is a literal.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import json
 import re
@@ -128,18 +135,35 @@ _RUNTIME_FILES: tuple[str, ...] = (
 #: The names whose absence proves the wiki is not wired into runtime.
 _WIKI_NAMES: tuple[str, ...] = ("molmcp.evolution.wiki", "WikiStore", "Maintainer")
 
-#: Split so this module's own source never spells the stack factory — the
-#: bottom of the file asserts exactly that.
-_STACK_FACTORY = "create_" + "stack"
+#: Package the scanned files belong to. Relative imports are resolved
+#: against it, so ``from ..helpers import x`` is compared as
+#: ``molmcp.helpers`` rather than as the two dots it was written with.
+_EVOLUTION_PACKAGE = "molmcp.evolution"
 
-#: Dependencies a leaf application package may not reach for.
-_FORBIDDEN_DEPENDENCIES: tuple[str, ...] = (
-    "discovery",
-    "github",
+#: Package this module is imported as — ``tests`` is on pytest's pythonpath,
+#: so the test package is the directory name — for the same resolution when
+#: the import walk is turned on this file.
+_TEST_PACKAGE = "test_evolution"
+
+#: Packages a leaf application module may not import. ``molmcp.discovery``
+#: is the retrieval layer, and the source that speaks to a hosted git
+#: service lives inside it — isolation from the package is isolation from
+#: that source, and from every sibling it could be reached through.
+_FORBIDDEN_IMPORTS: tuple[str, ...] = (
+    "molmcp.discovery",
+    "molmcp.mcp_provider",
     "fastmcp",
-    "mcp_provider",
-    _STACK_FACTORY,
 )
+
+#: Runtime symbols the leaf may neither import nor name. Spelled plainly:
+#: the walk below reads identifiers, so a module that merely mentions one
+#: in a docstring does not depend on it — and neither does this file.
+_FORBIDDEN_SYMBOLS: frozenset[str] = frozenset({"create_stack"})
+
+#: The dotted path of the forge source module, checked as text as well.
+#: ``importlib.import_module("molmcp.discovery.source.github")`` is an
+#: import that the AST walk can only see as a string constant.
+_FORGE_SOURCE_MODULE = "discovery.source.github"
 
 _EVOLUTION_FILES: tuple[str, ...] = ("wiki.py", "__init__.py")
 
@@ -240,6 +264,64 @@ def _fenced_regions(rendered: str) -> list[str]:
 def _read(path: Path) -> str:
     assert path.is_file(), f"{path} does not exist yet"
     return path.read_text(encoding="utf-8")
+
+
+def _module_of(node: ast.ImportFrom, package: str) -> str:
+    """Absolute dotted path of an ``ImportFrom``, relative levels resolved.
+
+    ``from ..helpers import x`` inside ``molmcp.evolution`` is a dependency
+    on ``molmcp.helpers``; comparing the written form against a package
+    name would miss it.
+    """
+    if not node.level:
+        return node.module or ""
+    parts = package.split(".")
+    base = ".".join(parts[: len(parts) - node.level + 1])
+    if not base:
+        return node.module or ""
+    return f"{base}.{node.module}" if node.module else base
+
+
+def _imported_modules(path: Path, package: str) -> list[str]:
+    """Every module *path* imports, as absolute dotted paths, in file order."""
+    modules: list[str] = []
+    for node in ast.walk(ast.parse(_read(path))):
+        if isinstance(node, ast.Import):
+            modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            modules.append(_module_of(node, package))
+    return modules
+
+
+def _forbidden_imports(path: Path, package: str = _EVOLUTION_PACKAGE) -> list[str]:
+    """The forbidden packages *path* imports, submodules included."""
+    return [
+        module
+        for module in _imported_modules(path, package)
+        if any(
+            module == root or module.startswith(f"{root}.")
+            for root in _FORBIDDEN_IMPORTS
+        )
+    ]
+
+
+def _forbidden_symbols(path: Path) -> list[str]:
+    """The forbidden runtime names *path* imports, binds, reads, or calls.
+
+    Identifiers only. A name inside a string or a docstring is a mention,
+    not a dependency, and this walk never sees one.
+    """
+    found: list[str] = []
+    for node in ast.walk(ast.parse(_read(path))):
+        if isinstance(node, ast.ImportFrom):
+            found.extend(
+                alias.name for alias in node.names if alias.name in _FORBIDDEN_SYMBOLS
+            )
+        elif isinstance(node, ast.Name) and node.id in _FORBIDDEN_SYMBOLS:
+            found.append(node.id)
+        elif isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_SYMBOLS:
+            found.append(node.attr)
+    return found
 
 
 class TestWikiStore:
@@ -694,11 +776,37 @@ def test_a_runtime_surface_never_names_a_wiki_symbol(relative: str) -> None:
 
 
 @pytest.mark.parametrize("name", _EVOLUTION_FILES)
-def test_the_evolution_leaf_names_no_runtime_dependency(name: str) -> None:
+def test_the_evolution_leaf_imports_no_runtime_package(name: str) -> None:
+    """Isolation is a dependency claim, so imports are what it is read from."""
+    imported = _forbidden_imports(_EVOLUTION / name)
+
+    assert imported == [], f"evolution/{name} imports {imported}"
+
+
+@pytest.mark.parametrize("name", _EVOLUTION_FILES)
+def test_the_evolution_leaf_names_no_runtime_symbol(name: str) -> None:
+    """Naming the stack factory is depending on it, however it was reached."""
+    named = _forbidden_symbols(_EVOLUTION / name)
+
+    assert named == [], f"evolution/{name} names {named}"
+
+
+@pytest.mark.parametrize("name", _EVOLUTION_FILES)
+def test_the_evolution_leaf_never_spells_the_forge_source_module(name: str) -> None:
+    """The one text check left: a dotted path handed to ``import_module`` is
+    an import the walk above sees only as a string."""
     source = _read(_EVOLUTION / name)
 
-    assert [dep for dep in _FORBIDDEN_DEPENDENCIES if dep in source] == []
+    assert _FORGE_SOURCE_MODULE not in source, (
+        f"evolution/{name} spells {_FORGE_SOURCE_MODULE!r}; a leaf may not "
+        f"reach the retrieval layer, dynamically either"
+    )
 
 
 def test_this_module_never_boots_the_server_stack() -> None:
-    assert _STACK_FACTORY not in Path(__file__).read_text(encoding="utf-8")
+    """The same walk, turned on this file: a test that starts the stack to
+    prove it absent proves the opposite."""
+    here = Path(__file__)
+
+    assert _forbidden_imports(here, _TEST_PACKAGE) == []
+    assert _forbidden_symbols(here) == []

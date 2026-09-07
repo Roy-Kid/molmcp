@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import json
-import pathlib
 import sys
 from pathlib import Path
 
@@ -371,7 +370,7 @@ class TestInitComposesTheHostPrimitives:
     ) -> None:
         from molmcp import cli
 
-        monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(
             "molmcp.client_config.default_plane_ids",
             lambda: ("molcrafts", "molvis"),

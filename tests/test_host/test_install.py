@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-import pathlib
 import re
 from pathlib import Path
 from typing import Literal
@@ -49,7 +48,7 @@ INSTALL_SOURCE = (
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point ``Path.home()`` at ``tmp_path`` — never at a real home."""
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     return tmp_path
 
 
