@@ -24,8 +24,8 @@ Two disciplines are easy to lose:
   pointer belongs to a later leaf; this one only says accepted or not,
   and why.
 
-Leaf module, a sibling of :mod:`molmcp.evolution.propose`: the standard
-library and its own types. It imports no FastMCP, no MCP and nothing
+Leaf module: the standard library and its own types. It imports no
+FastMCP, no MCP and nothing
 from the runtime that composes planes — which is why the two seams it
 needs, :class:`ContractRunner` and :class:`ReplayFn`, are keyword-only
 parameters with no default at all. A default would have to be a real
@@ -149,11 +149,9 @@ class ContractOutcome:
 class Challenger(Protocol):
     """The checkout under evaluation, read for three names only.
 
-    Duck-typed on purpose, and named for what it is rather than for the
-    :class:`~molmcp.evolution.propose.Candidate` dataclass that already
-    lives in this package — that one is a proposed patch, this one is a
-    tree someone has already built. The report field is still
-    ``candidate_sha``.
+    Duck-typed on purpose, and named for what it is: a tree someone has
+    already built, not a patch someone has proposed. The report field is
+    still ``candidate_sha``.
 
     :func:`evaluate` reads ``sha`` and nothing else; ``component`` and
     ``affected_paths`` are here because callers pass one object around,
