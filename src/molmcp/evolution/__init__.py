@@ -25,6 +25,20 @@ to a single component, with the patch and the receipt ids that
 evidenced it. It is a pure function over views the caller builds; it
 opens no file, and it never applies what it proposes.
 
+:mod:`~molmcp.evolution.evaluate` is the gate on the far side of that.
+Given a challenger checkout and the champion's sha it replays the
+held-out cases under three frozen seeds and returns one frozen
+:class:`~molmcp.evolution.evaluate.EvaluationReport`: accepted or not,
+and the single reason why. Four readings, compared one at a time and
+never summed into a score. It moves no pointer — the report is a
+verdict, and promoting on one belongs to whoever holds the pointer.
+
+Note the two ``C`` names this façade carries.
+:class:`~molmcp.evolution.propose.Candidate` is a proposed patch;
+:class:`~molmcp.evolution.evaluate.Challenger` is the checkout under
+evaluation. Different concepts, so different names — though the report
+field is still ``candidate_sha``.
+
 Leaf package, a sibling of :mod:`molmcp.helpers`: the standard library
 plus that helper. It does not import FastMCP, does not read settings,
 does not borrow the adoption ledger, and is not re-exported from
@@ -42,6 +56,29 @@ Re-exporting it here would advertise a fence for uses that must not have
 one.
 """
 
+from .evaluate import (
+    ACCEPTED,
+    DEFAULT_SEEDS,
+    DROP_CALL_COUNT,
+    DROP_LATENCY_S,
+    DROP_TOKENS,
+    DROP_TOOL_ERRORS,
+    NO_PRACTICAL_GAIN,
+    REGRESSION_FAILED,
+    WORSE_CALL_COUNT,
+    WORSE_LATENCY,
+    WORSE_TOKENS,
+    WORSE_TOOL_ERRORS,
+    Challenger,
+    ContractOutcome,
+    ContractRunner,
+    EvalCase,
+    EvaluationError,
+    EvaluationReport,
+    Metrics,
+    ReplayFn,
+    evaluate,
+)
 from .propose import (
     BundleView,
     Candidate,
@@ -74,26 +111,47 @@ from .wiki import (
 )
 
 __all__ = [
+    "ACCEPTED",
+    "DEFAULT_SEEDS",
+    "DROP_CALL_COUNT",
+    "DROP_LATENCY_S",
+    "DROP_TOKENS",
+    "DROP_TOOL_ERRORS",
+    "NO_PRACTICAL_GAIN",
     "RECEIPT_FIELDS",
     "RECEIPT_TTL_DAYS",
     "RECEIPT_VERSION",
+    "REGRESSION_FAILED",
     "SHARE_RECEIPTS_KEY",
+    "WORSE_CALL_COUNT",
+    "WORSE_LATENCY",
+    "WORSE_TOKENS",
+    "WORSE_TOOL_ERRORS",
     "BundleView",
     "Candidate",
+    "Challenger",
     "Component",
     "Consent",
+    "ContractOutcome",
+    "ContractRunner",
     "EpisodeReceipt",
+    "EvalCase",
+    "EvaluationError",
+    "EvaluationReport",
     "Maintainer",
+    "Metrics",
     "Pattern",
     "Receipt",
     "ReceiptError",
     "ReceiptLog",
     "ReceiptsView",
+    "ReplayFn",
     "WikiError",
     "WikiPage",
     "WikiReceipt",
     "WikiStore",
     "WikiView",
+    "evaluate",
     "propose",
     "redact_text",
     "render_page",
