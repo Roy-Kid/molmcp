@@ -131,6 +131,14 @@ out_of_scope:
   - provider_sdk package (spec 01)
 ---
 
+## 2026-09-07 修订：`regressions/` 已删除
+
+本仓从未发布过任何版本，没有可回归的对象；`regressions/` 也从来不在 CI 里跑
+（`uv run pytest -v` 只跑 `tests/`），以致其中一个脚本烂掉很久无人察觉。整个目录
+已删。**下文凡是要求新增 `regressions/<slug>.py` 的任务与判定一律作废**；相应的
+正确性证明由 `tests/` 下的单元与结构性守卫承担。
+
+
 # Acceptance criteria
 
 「完成」是：目录 **id** 只来自组发现；**文案** 仍由 `planes.py` 表提供；**tools_hint** 只 duck-type `tool_specs`。树内实现不搬走。

@@ -70,6 +70,14 @@ out_of_scope:
   - GitHub branch-protection UI
 ---
 
+## 2026-09-07 修订：`regressions/` 已删除
+
+本仓从未发布过任何版本，没有可回归的对象；`regressions/` 也从来不在 CI 里跑
+（`uv run pytest -v` 只跑 `tests/`），以致其中一个脚本烂掉很久无人察觉。整个目录
+已删。**下文凡是要求新增 `regressions/<slug>.py` 的任务与判定一律作废**；相应的
+正确性证明由 `tests/` 下的单元与结构性守卫承担。
+
+
 ## 2026-09-07 修订：`--full` 已删除
 
 下列条目中凡提到 `--full` / `FULL_RUN` / `evaluate` 的部分作废，理由见 spec 正文

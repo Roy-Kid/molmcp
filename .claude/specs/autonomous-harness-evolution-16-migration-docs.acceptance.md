@@ -115,6 +115,14 @@ out_of_scope:
   - rewriting the installation.md uv --prerelease warning
 ---
 
+## 2026-09-07 修订：`regressions/` 已删除
+
+本仓从未发布过任何版本，没有可回归的对象；`regressions/` 也从来不在 CI 里跑
+（`uv run pytest -v` 只跑 `tests/`），以致其中一个脚本烂掉很久无人察觉。整个目录
+已删。**下文凡是要求新增 `regressions/<slug>.py` 的任务与判定一律作废**；相应的
+正确性证明由 `tests/` 下的单元与结构性守卫承担。
+
+
 # Acceptance — autonomous-harness-evolution-16-migration-docs
 
 本 spec 完成的标志是：两仓契约与许可证表写在公开概念页，内部 notes 只保留「新建空仓 + SHA 身份」，退出手册在第 5 步 STOP，CI 钉住已发布示例能 parse 且不再把旧 marketplace URL 当现行安装地址。远程 GitHub 操作与 schema 实现都不在「done」里。

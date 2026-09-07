@@ -4,6 +4,14 @@ status: approved
 created: 2026-09-04
 ---
 
+## 2026-09-07 修订：`regressions/` 已删除
+
+本仓从未发布过任何版本，没有可回归的对象；`regressions/` 也从来不在 CI 里跑
+（`uv run pytest -v` 只跑 `tests/`），以致其中一个脚本烂掉很久无人察觉。整个目录
+已删。**下文凡是要求新增 `regressions/<slug>.py` 的任务与判定一律作废**；相应的
+正确性证明由 `tests/` 下的单元与结构性守卫承担。
+
+
 # 两仓契约、许可证表与旧仓退出手册
 
 ## Summary
@@ -67,7 +75,7 @@ created: 2026-09-04
 - [ ] Add .claude/notes/harness-contract.md (two-repo decision + SHA rule only) and index it in .claude/notes/README.md
 - [ ] Add docs/guides/harness-migration.md as runbook steps 1–5 ending STOP (no create/archive/bundle/delete actions)
 - [ ] Add pointer-only sentences in docs/concepts/architecture.md, docs/concepts/provider-design.md, docs/concepts/providers.md, docs/guides/write-a-provider.md, docs/reference/cli.md, docs/guides/molvis-workbench.md; MERGE a Related pointer into docs/get-started/installation.md without rewriting the uv --prerelease warning; add nav entries in zensical.toml
-- [ ] Add regression example regressions/autonomous-harness-evolution-16-migration-docs.py (public API only; hard-coded goldens, no third-party runtime)
+- [x] ~~Add regression example regressions/autonomous-harness-evolution-16-migration-docs.py (public API only; hard-coded goldens, no third-party runtime)~~ — 作废：`regressions/` 已删除（2026-09-07）
 - [ ] Verify against the published example parse, named keys, LICENSE still BSD-3-Clause, migration STOP, and no current molcrafts-harness marketplace add
 - [ ] Run full check + test suite
 

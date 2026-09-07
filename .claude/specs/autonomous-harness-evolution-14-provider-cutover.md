@@ -4,6 +4,14 @@ status: approved
 created: 2026-09-04
 ---
 
+## 2026-09-07 修订：`regressions/` 已删除
+
+本仓从未发布过任何版本，没有可回归的对象；`regressions/` 也从来不在 CI 里跑
+（`uv run pytest -v` 只跑 `tests/`），以致其中一个脚本烂掉很久无人察觉。整个目录
+已删。**下文凡是要求新增 `regressions/<slug>.py` 的任务与判定一律作废**；相应的
+正确性证明由 `tests/` 下的单元与结构性守卫承担。
+
+
 # 目录成员只来自组发现
 
 ## Summary
@@ -67,7 +75,7 @@ librarian 报告：blueprint refresh deferred。
 - [ ] Write failing unit tests for create_stack signature freeze (tests/test_stack.py → TestCreateStackSignature) and settings nested-key pin (tests/test_settings.py → TestNestedSchemaFirstParty)
 - [ ] Implement catalog membership and copy table in src/molmcp/planes.py: delete `_PROVIDER_META`; ids only from discover_providers; purpose/when from catalog-owned copy table or generic fallback; tools_hint via getattr(tool_specs)
 - [ ] Update src/molmcp/skill/SKILL.md recoveries (core-down vs namespaced-missing with frozen science-package names) and pin the text in tests/test_client_config.py; note in docs/concepts/provider-design.md that catalog membership is the entry-point group, keeping in-tree first-party and four-conditions
-- [ ] Add regression example regressions/autonomous-harness-evolution-14-provider-cutover.py (public API only; hard-coded goldens, no third-party runtime)
+- [x] ~~Add regression example regressions/autonomous-harness-evolution-14-provider-cutover.py (public API only; hard-coded goldens, no third-party runtime)~~ — 作废：`regressions/` 已删除（2026-09-07）
 - [ ] Run full check + test suite
 
 ## Testing strategy

@@ -4,6 +4,14 @@ status: approved
 created: 2026-09-07
 ---
 
+## 2026-09-07 修订：`regressions/` 已删除
+
+本仓从未发布过任何版本，没有可回归的对象；`regressions/` 也从来不在 CI 里跑
+（`uv run pytest -v` 只跑 `tests/`），以致其中一个脚本烂掉很久无人察觉。整个目录
+已删。**下文凡是要求新增 `regressions/<slug>.py` 的任务与判定一律作废**；相应的
+正确性证明由 `tests/` 下的单元与结构性守卫承担。
+
+
 # harness-evaluator — 双 agent 盲测的 harness 评估器
 
 ## Summary
@@ -193,7 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int: ...
 - [ ] Write failing structural tests for the two agent definitions (tests/test_harness_agents.py → TestHarnessAgents)
 - [ ] Write .claude/agents/harness-actor.md (frontmatter name/description/tools/model; harness arrives as prompt text; no criteria; no Write/Edit tool)
 - [ ] Write .claude/agents/harness-observer.md (frontmatter name/description/tools/model; blind A/B transcripts; emits the observation schema only)
-- [ ] Add regression example regressions/harness-evaluator.py (public API only; hard-coded goldens with a negative control per golden, no third-party runtime)
+- [x] ~~Add regression example regressions/harness-evaluator.py (public API only; hard-coded goldens with a negative control per golden, no third-party runtime)~~ — 作废：`regressions/` 已删除（2026-09-07）
 - [ ] Run full check + test suite
 
 ## Testing strategy
