@@ -86,7 +86,9 @@ where = ["src"]
 "molmcp.skill" = ["SKILL.md"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "tests"]
+# Three roots, one flat import namespace: a future scripts/ module must not
+# be named after a tests/ top-level package, or one silently shadows the other.
+pythonpath = ["src", "tests", "scripts"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [

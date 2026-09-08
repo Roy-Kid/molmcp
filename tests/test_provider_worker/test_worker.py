@@ -14,8 +14,9 @@ The primary reaper is that swapped lifespan: entering and leaving
 call from the test. ``shutdown()`` is the *explicit abort* — the failure path
 and the last resort, never the thing that proves teardown works.
 
-``create_plane`` is deliberately absent: that whole-server assembly belongs to
-``regressions/``.
+``create_plane`` is deliberately absent: these are unit tests of the adapter,
+and whole-server assembly is a different question from whether this class
+starts and reaps a child.
 """
 
 from __future__ import annotations

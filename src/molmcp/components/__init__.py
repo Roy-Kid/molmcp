@@ -59,7 +59,12 @@ from .models import (
     ComponentKind,
     ComponentSpec,
 )
-from .store import ImmutableGitStore
+from .store import (
+    ImmutableGitStore,
+    ShaConflictError,
+    StoreError,
+    UnknownShaError,
+)
 
 __all__ = [
     "ALLOWED_REQUIRES",
@@ -77,6 +82,9 @@ __all__ = [
     "KIND_PATH_PREFIX",
     "ResolvedBundle",
     "SHA_PATTERN",
+    "ShaConflictError",
+    "StoreError",
+    "UnknownShaError",
     "extract_git_archive",
     "load_harness_catalog",
 ]
