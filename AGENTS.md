@@ -100,6 +100,25 @@ Layered; dependencies point inward only:
 <!-- Free-form additions below this line are preserved across re-runs.
      If a section grows past a screen, promote to .claude/notes/<topic>.md. -->
 
+## CI parity: two pairs, both in one commit
+
+`.pre-commit-config.yaml` is the local half of two workflows, and each pair is
+one string copied into two files. Change one side without the other and the
+copies drift, so change both in the same commit.
+
+1. **Package matrix.** The `ci-lint` / `ci-test` hooks run the same shell
+   commands as the Lint / Test `run:` steps of `.github/workflows/ci.yml`. That
+   workflow stays the OS/Python matrix, and `mol_project.ci.config` keeps
+   pointing at it.
+2. **Required check.** The `official-gate` hook's `entry:` is the same literal
+   as the `run:` of the `official-gate` pull-request job in
+   `.github/workflows/official-gate.yml` — both `uv run molmcp gate`, bare.
+   `uv sync --extra dev` is a prior Install step, not part of the compared
+   token, and no wrapper goes around either side. `src/molmcp/gate.py` owns
+   that literal (`GATE_RUN`) and the two files are its serialized copies;
+   `molmcp gate` is what checks they still agree. The GitHub required check is
+   named `official/gate`, which is that job's `name:`, not its id.
+
 ## Discovery ranking & the call graph
 
 Capability discovery is a **retrieval** problem, not graph navigation. The

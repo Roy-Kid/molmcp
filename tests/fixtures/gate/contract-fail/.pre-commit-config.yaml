@@ -1,10 +1,9 @@
-# Managed by prek: `prek install`
-# CI parity, pair 1: ci-lint / ci-test are the same shell commands as
-# .github/workflows/ci.yml's Lint / Test steps (no tox wrapper).
-# CI parity, pair 2: official-gate's entry: is the same literal as the
-# official-gate job's run: in .github/workflows/official-gate.yml — bare, so
-# that the two are equal character for character.
-# tox remains in [project.optional-dependencies] dev for optional local isolation.
+# Fixture: the planted breakage, and the only difference from `wired/`.
+#
+# The official-gate hook wraps the call in `bash -c 'uv sync --extra dev && …'`,
+# so its `entry:` no longer equals the pull-request job's literal
+# `run: uv run molmcp gate`. Everything else in this tree is the legal wiring,
+# which is what makes the reported failure attributable to this line.
 
 default_install_hook_types: [pre-commit, pre-push]
 
@@ -16,12 +15,6 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
         args: ['--unsafe']
-      - id: check-added-large-files
-        args: ['--maxkb=1024']
-      - id: check-merge-conflict
-      - id: mixed-line-ending
-      - id: check-toml
-      - id: check-json
 
   - repo: local
     hooks:
@@ -41,13 +34,9 @@ repos:
         always_run: true
         stages: [pre-push]
 
-      # The bare literal, on purpose: not `entry: uv` plus `args:`, and not
-      # the `bash -c 'uv sync && …'` wrapper the two hooks above carry. It has
-      # to equal the official-gate job's `run:` as a string, and a wrapper is
-      # a different string. Push tier only — the commit tier stays fast.
       - id: official-gate
         name: "official/gate (same as official-gate.yml)"
-        entry: uv run molmcp gate
+        entry: bash -c 'uv sync --extra dev && uv run molmcp gate'
         language: system
         pass_filenames: false
         always_run: true
