@@ -71,6 +71,30 @@ class TestConfigVerbs:
         assert payload["sources"] == {"molpy": "pkg:molpy"}
         assert str(st.user_settings_path()) in payload["layers"]
 
+    def test_list_prints_harness_as_an_array_of_entry_objects(
+        self, home, monkeypatch, tmp_path, capsys
+    ):
+        """`harness` reaches the terminal as a JSON array, not an object.
+
+        ``Settings.to_dict`` is the second reader of the setting and
+        ``config list`` prints what it returns, so the list-of-objects
+        shape is user-visible output rather than an internal detail.
+        The file is written directly because no ``config`` verb can
+        author a list whose elements are objects.
+        """
+        monkeypatch.chdir(tmp_path)
+        entry = {"name": "mine", "owner": "acme", "repo": "harness", "ref": "main"}
+        st.write_settings_file(st.user_settings_path(), {"harness": [entry]})
+
+        assert cli.main(["config", "list"]) == 0
+
+        harness = json.loads(capsys.readouterr().out)["harness"]
+        assert isinstance(harness, list)
+        assert len(harness) == 1
+        assert isinstance(harness[0], dict)
+        assert set(harness[0]) == {"name", "owner", "repo", "ref"}
+        assert harness[0] == entry
+
     def test_get_reads_one_key(self, home, monkeypatch, tmp_path, capsys):
         monkeypatch.chdir(tmp_path)
         cli.main(["config", "set", "sources.molpy", "pkg:molpy"])

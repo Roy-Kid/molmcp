@@ -1,6 +1,6 @@
 """The published harness example, the licence table, and the exit runbook.
 
-Three documents make a promise this repository has to keep.
+Four documents make a promise this repository has to keep.
 
 ``docs/concepts/harness.example.toml`` shows a reader what a harness catalog
 looks like. An example that no longer parses teaches the wrong grammar
@@ -9,6 +9,15 @@ confidently, so it is loaded here through the *real*
 parser. This module deliberately defines no catalog type of its own —
 ``molmcp.components`` owns the schema, and a second definition would be the
 one that drifts.
+
+``docs/concepts/harness.md`` fences a ``~/.molmcp/settings.json`` snippet whose
+``harness`` value is the list of named sources an install may serve from. That
+snippet is the only place a reader is shown how to author an entry — no
+``molmcp config`` verb can write one yet — so it is held to the same discipline
+as the catalog example one paragraph up: parsed as JSON here, and each entry
+handed to the real :class:`molmcp.settings.HarnessSource`, so a snippet that
+drifts from the type fails the build rather than teaching a shape nothing
+accepts.
 
 ``docs/guides/harness-migration.md`` is a runbook a human follows. It stops
 before every operation that mutates a repository on GitHub, because each of
@@ -22,12 +31,14 @@ it, and must never be read as reissuing it.
 from __future__ import annotations
 
 import ast
+import json
 import re
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from molmcp import settings as st
 from molmcp.components import (
     CatalogError,
     ComponentKind,
@@ -71,6 +82,20 @@ _GITHUB_MUTATIONS = ("create", "archive", "bundle", "delet")
 
 #: An install line for the repository that is being retired.
 _MARKETPLACE_ADD = re.compile(r"marketplace\s+add\s+\S*molcrafts-harness", re.I)
+
+#: A fenced JSON code block, body only. Markdown is matched rather than parsed
+#: because one fence on one page is the whole subject; a Markdown parser would
+#: be a dependency taken on to read four lines.
+_JSON_FENCE = re.compile(r"^```json\n(.*?)^```", re.M | re.S)
+
+#: The settings file the concept page teaches a reader to edit by hand, named
+#: here so that renaming it on the page fails rather than quietly unpins the
+#: snippet below.
+_SETTINGS_FILE = "~/.molmcp/settings.json"
+
+#: The dotted key the ordered source list replaced. ``config set`` exits 2 on
+#: it now, so a page still showing it hands the reader a broken command.
+_RETIRED_HARNESS_KEY = "harness.owner"
 
 #: A registration line of the shape an entry-point table uses.
 _HARNESS_ENTRY_POINT = re.compile(r"^harness\s*=\s*\S", re.M)
@@ -147,6 +172,29 @@ def _numbered_headings(text: str) -> list[str]:
     return re.findall(r"^##\s*(\d+)\.", text, re.M)
 
 
+def _settings_snippets(text: str) -> list[dict[str, object]]:
+    """Parse every fenced JSON block on a page that configures ``harness``.
+
+    Selection is by content, not by position: a block qualifies by being a JSON
+    object with a ``harness`` key. Anchoring on the first fence instead would
+    make inserting a paragraph above it silently change what is asserted, and
+    would let a second, drifting copy of the snippet appear unnoticed.
+
+    Args:
+        text: One Markdown page.
+
+    Returns:
+        Each qualifying block, parsed, in the order the page fences them.
+
+    Raises:
+        json.JSONDecodeError: If any ```json block on the page is not JSON. A
+            fence labelled ``json`` that does not parse is a defect wherever it
+            sits, so it is reported rather than filtered out.
+    """
+    blocks = [json.loads(body) for body in _JSON_FENCE.findall(text)]
+    return [b for b in blocks if isinstance(b, dict) and "harness" in b]
+
+
 @pytest.fixture(scope="module")
 def example_text() -> str:
     return _EXAMPLE.read_text(encoding="utf-8")
@@ -155,6 +203,23 @@ def example_text() -> str:
 @pytest.fixture(scope="module")
 def example_table(example_text: str) -> dict[str, object]:
     return tomllib.loads(example_text)
+
+
+@pytest.fixture(scope="module")
+def concept_text() -> str:
+    return _CONCEPT.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def settings_snippets(concept_text: str) -> list[dict[str, object]]:
+    """Every ``harness``-bearing JSON block the concept page fences.
+
+    The list is handed over whole rather than unwrapped to a single block, so
+    that "there is exactly one" is a named assertion in
+    ``test_concept_page_fences_one_settings_file`` instead of a fixture that
+    fails before any test runs.
+    """
+    return _settings_snippets(concept_text)
 
 
 @pytest.fixture
@@ -275,6 +340,59 @@ class TestHarnessCatalogFixture:
         # particular way of punctuating it.
         assert re.search(r"new,?\s+empty\s+repository", text) is not None
         assert "rename" in text
+
+    # ------------------------------------------------- the settings-file shape
+
+    def test_neither_page_names_the_retired_dotted_harness_key(self):
+        """``harness`` is a list now, so the dotted key addresses nothing.
+
+        ``_SCHEMA["harness"]`` is ``list``, which makes ``_resolve`` refuse
+        every ``harness.<member>`` path, so ``molmcp config set harness.owner``
+        exits 2. A page still showing it would be handing the reader a command
+        that cannot work.
+        """
+        for path in (_CONCEPT, _INSTALLATION):
+            assert _RETIRED_HARNESS_KEY not in path.read_text(encoding="utf-8"), path
+
+    def test_concept_page_fences_one_settings_file(
+        self, concept_text, settings_snippets
+    ):
+        """One snippet, and the page says which file it is.
+
+        Editing that file is the only way to author a source until the
+        ``config`` verb lands, so the page has to name it. Exactly one snippet,
+        because two would be two copies of a contract and one of them would be
+        the stale one.
+        """
+        assert _SETTINGS_FILE in concept_text
+        assert len(settings_snippets) == 1, settings_snippets
+
+    def test_snippet_gives_harness_a_list_of_entry_objects(self, settings_snippets):
+        """The shape claim: a list of objects, keyed like the dataclass.
+
+        ``_HARNESS_ENTRY_KEYS`` is derived from
+        :class:`molmcp.settings.HarnessSource` rather than written out, here
+        and in ``settings.py`` alike, so a fifth field added to the type widens
+        both sides at once.
+        """
+        entries = settings_snippets[0]["harness"]
+        assert isinstance(entries, list)
+        assert entries, "an empty list would demonstrate nothing"
+        for entry in entries:
+            assert isinstance(entry, dict), entry
+            assert set(entry) <= st._HARNESS_ENTRY_KEYS, entry
+
+    def test_every_snippet_entry_constructs_a_harness_source(self, settings_snippets):
+        """The type is the judge, exactly as the loader would be.
+
+        Re-stating the entry rules here would create a second definition of
+        them, and it would be this one that drifted. The snippet is instead
+        handed to the real type, so a doc example that stops being loadable
+        fails the build.
+        """
+        for entry in settings_snippets[0]["harness"]:
+            source = st.HarnessSource(**entry)
+            assert source.name
 
     # --------------------------------------------------------------- licence
 

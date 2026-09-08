@@ -123,11 +123,25 @@ molmcp config set sources.atomiverse pkg:atomiverse
 | `maxCacheAgeDays` | Retention window for extraction payloads (default 30) |
 | `pythonEnv` | Environment to discover from: a venv root, a python, or a site-packages dir |
 | `discoverInclude` / `discoverExclude` | Force a distribution in or out of auto-discovery |
+| `harness` | Ordered list of named harness sources, each an object `{name, owner, repo, ref}` |
 | `molexp.workspace` | Default molexp workspace path |
 | `molq.database` | Override the molq job database |
 
 Unknown keys are rejected. A mistyped `indexWorkspaces` that quietly does
 nothing is worse than one that says so.
+
+`harness` is the one key in that table the `config` verbs cannot write: its
+elements are objects, and every write verb takes a single string. Entries are
+authored by editing the settings file directly, and a `config` verb for them is
+coming. What the list is for, what an entry means, and a worked snippet of the
+file live on [Harness catalog](../concepts/harness.md); molmcp ships no default
+source, so an install that names none simply has no harness.
+
+Because rejection happens on every *read*, and every `config` verb reads the
+file before it writes it, a typo inside a hand-written entry stops all of
+`config list`, `get`, `set`, `add` and `remove` — and `molmcp serve` too — with
+exit status 2, the message naming the file and the offending key. The fix is to
+edit that same file; no verb can do it for you.
 
 ### `molcrafts.json`
 
@@ -139,5 +153,5 @@ was.
 
 - **[Quickstart](quickstart.md)** — `molmcp serve` and `molmcp init`
 - **[Architecture](../concepts/architecture.md)** — FastMCP composition
-- **[Harness catalog](../concepts/harness.md)** — the `harness.owner` / `harness.repo` / `harness.ref` settings, and why a harness is a Git SHA rather than a plane
+- **[Harness catalog](../concepts/harness.md)** — the ordered `harness` source list, how to write one into your settings file, and why a harness is a Git SHA rather than a plane
 - **[Deploy](deploy.md)** — local stdio for Claude Code

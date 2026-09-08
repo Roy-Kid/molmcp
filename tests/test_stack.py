@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -23,7 +24,7 @@ from molmcp.components import (
 )
 from molmcp.config import AppConfig, ConfigurationError
 from molmcp.provider_worker.worker import WorkerProvider
-from molmcp.settings import Settings, SettingsError
+from molmcp.settings import HarnessSource, Settings, SettingsError
 
 
 class _Vis:
@@ -79,7 +80,8 @@ async def test_single_provider_plane_stays_bare():
 # that module is the single composition root the wiring has to live in.
 
 _SHA = "0123456789abcdef0123456789abcdef01234567"
-_LOCATOR = {"owner": "molcrafts", "repo": "harness", "ref": "main"}
+_SOURCE = HarnessSource(name="official", owner="molcrafts", repo="harness", ref="main")
+_OTHER = HarnessSource(name="private", owner="acme", repo="tooling", ref="trunk")
 _CAPABILITIES = frozenset({"provider-sdk", "harness-catalog"})
 _SKILL = ComponentSpec(
     kind=ComponentKind.SKILL,
@@ -285,7 +287,7 @@ class _Wiring:
 def _wire(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    harness: dict[str, str] | None = None,
+    harness: tuple[HarnessSource, ...] | None = None,
     tree: Path | None = None,
     current: str | None = None,
     published: bool = True,
@@ -298,7 +300,7 @@ def _wire(
 
     def load_settings(*args: object, **kwargs: object) -> Settings:
         wiring.settings.append((args, kwargs))
-        return Settings(harness=dict(harness or {}))
+        return Settings(harness=tuple(harness or ()))
 
     def github_transport(*args: object, **kwargs: object) -> _FakeTransport:
         wiring.transports.append((args, kwargs))
@@ -365,7 +367,7 @@ async def _tool_names(stack: FastMCP) -> set[str]:
 
 def test_dual_injection_never_consults_the_harness_locator(tmp_path, monkeypatch):
     """Both arms injected: the locator is not read, bound, or catalogued."""
-    wiring = _wire(monkeypatch, harness={"owner": "molcrafts"})
+    wiring = _wire(monkeypatch, harness=(_SOURCE,))
     create_stack(
         collection=CollectionIndex([]),
         providers=[_Vis()],
@@ -376,11 +378,15 @@ def test_dual_injection_never_consults_the_harness_locator(tmp_path, monkeypatch
     assert wiring.catalogs == []
 
 
-async def test_unset_locator_serves_exactly_like_today(tmp_path, monkeypatch):
-    """Three keys unset: no bind, no extras, entry points then ``disable=``."""
+async def test_an_empty_source_list_serves_exactly_like_today(tmp_path, monkeypatch):
+    """No source named: no bind, no extras, entry points then ``disable=``.
+
+    The empty *list* is the un-harnessed install — the one configuration
+    that must keep serving exactly as it did before a harness existed.
+    """
     wiring = _wire(
         monkeypatch,
-        harness={},
+        harness=(),
         entry_points=(_Marker("demo"), _Marker("other")),
     )
     stack = create_stack(config=_config(tmp_path), disable=["other"])
@@ -394,26 +400,139 @@ async def test_unset_locator_serves_exactly_like_today(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("harness", "missing"),
+    ("source", "missing"),
     [
-        ({"owner": "molcrafts"}, ("repo", "ref")),
-        ({"owner": "molcrafts", "repo": "harness"}, ("ref",)),
+        (HarnessSource(name="mine", owner="molcrafts"), ("repo", "ref")),
+        (HarnessSource(name="mine", owner="molcrafts", repo="harness"), ("ref",)),
     ],
 )
-def test_partial_locator_names_the_missing_keys(
+def test_a_partial_entry_names_the_entry_and_every_missing_field(
     tmp_path,
     monkeypatch,
-    harness: dict[str, str],
+    source: HarnessSource,
     missing: tuple[str, ...],
 ):
-    """One or two of the three keys is a ConfigurationError, not a guess."""
-    _wire(monkeypatch, harness=harness)
+    """A half-authored entry is a ConfigurationError, not a guess.
+
+    The entry's ``name`` is its completion address now that the settings
+    are a list, so the message has to carry it: "repo is not set" points at
+    no file position an operator can go and edit.
+    """
+    _wire(monkeypatch, harness=(source,))
     with pytest.raises(ConfigurationError) as excinfo:
         create_stack(config=_config(tmp_path))
     message = str(excinfo.value)
-    for key in missing:
-        assert key in message
+    assert source.name in message
+    for field_name in missing:
+        assert field_name in message
     assert not isinstance(excinfo.value, SettingsError)
+
+
+def test_a_named_entry_with_no_coordinates_is_an_error_not_an_unset_harness(
+    tmp_path, monkeypatch
+):
+    """Naming a source is a claim; the empty *list* is the way to unset."""
+    _wire(monkeypatch, harness=(HarnessSource(name="mine"),))
+    with pytest.raises(ConfigurationError) as excinfo:
+        create_stack(config=_config(tmp_path))
+    message = str(excinfo.value)
+    assert "mine" in message
+    for field_name in ("owner", "repo", "ref"):
+        assert field_name in message
+
+
+def test_an_incomplete_second_entry_raises_after_a_complete_first(
+    tmp_path, monkeypatch
+):
+    """No entry is ever skipped: serving past one would serve the wrong repo.
+
+    Skipping the unfinished entry and carrying on from its neighbour is
+    refused for the reason a built-in default is refused — it would serve
+    code from a repository the operator did not select.
+    """
+    _wire(monkeypatch, harness=(_SOURCE, HarnessSource(name="private", owner="acme")))
+    with pytest.raises(ConfigurationError) as excinfo:
+        create_stack(config=_config(tmp_path))
+    message = str(excinfo.value)
+    assert "private" in message
+    assert "repo" in message
+    assert "ref" in message
+
+
+def test_two_complete_sources_are_returned_in_file_order(monkeypatch):
+    """Order is the file's order — the contract later resolution inherits."""
+    _wire(monkeypatch, harness=(_SOURCE, _OTHER))
+    assert server._harness_locator() == (_SOURCE, _OTHER)
+
+
+def test_two_sources_still_bind_exactly_one_store_root(tmp_path, monkeypatch):
+    """Several named sources, one store: no per-source root is introduced.
+
+    ``ImmutableGitStore`` already records provenance per SHA and refuses a
+    SHA claimed by a second repository, so a second root would buy nothing
+    and would strand every already-published tree.
+    """
+    config = _config(tmp_path)
+    wiring = _wire(
+        monkeypatch,
+        harness=(_SOURCE, _OTHER),
+        current=_SHA,
+        tree=_checkout(tmp_path),
+    )
+    create_stack(config=config)
+    assert len(wiring.stores) == 1
+    assert wiring.stores[0].root == config.cache_dir / "harness"
+    assert len(wiring.binds) == 1
+    assert wiring.binds[0]["path"] == config.cache_dir / "harness.pointer"
+
+
+# -- the reader itself, over a real settings file ---------------------------
+#
+# Every test above fakes ``load_settings`` through the ``_wire`` seam, so a
+# reader that cannot read the type it is handed passes all of them. These two
+# call the real ``_harness_locator`` against a settings file on disk, under a
+# temporary home so no developer's own ``~/.molmcp`` can reach the assertion.
+
+
+def _home_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, data: dict[str, object]
+) -> None:
+    """Point ``~`` and the working directory at hermetic temporary trees."""
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".molmcp").mkdir(parents=True)
+    project.mkdir()
+    (home / ".molmcp" / "settings.json").write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.chdir(project)
+
+
+def test_the_real_locator_reads_the_named_sources_off_disk(tmp_path, monkeypatch):
+    """The unfaked reader over a real file, in file order."""
+    _home_settings(
+        tmp_path,
+        monkeypatch,
+        {
+            "harness": [
+                {
+                    "name": "official",
+                    "owner": "molcrafts",
+                    "repo": "harness",
+                    "ref": "main",
+                },
+                {"name": "private", "owner": "acme", "repo": "tooling", "ref": "trunk"},
+            ]
+        },
+    )
+    assert server._harness_locator() == (_SOURCE, _OTHER)
+
+
+def test_the_real_locator_reads_an_empty_settings_file_as_no_harness(
+    tmp_path, monkeypatch
+):
+    """The unfaked reader on a stock install: ``()``, not an error."""
+    _home_settings(tmp_path, monkeypatch, {})
+    assert server._harness_locator() == ()
 
 
 async def test_absent_current_falls_back_without_resolving_or_promoting(
@@ -422,7 +541,7 @@ async def test_absent_current_falls_back_without_resolving_or_promoting(
     """A complete locator with no current SHA serves the unset fallback."""
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=None,
         tree=_checkout(tmp_path),
         entry_points=(_Marker("demo"),),
@@ -439,7 +558,7 @@ def test_current_missing_from_the_store_names_that_sha(tmp_path, monkeypatch):
     """An activated SHA with no tree is an error, never a silent re-clone."""
     _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=_checkout(tmp_path),
         published=False,
@@ -456,7 +575,7 @@ async def test_injected_collection_still_runs_the_provider_git_arm(
     tree = _checkout(tmp_path)
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=tree,
         catalog=_catalog(_provider_component()),
@@ -472,7 +591,7 @@ async def test_injected_providers_still_run_the_overlay_git_arm(tmp_path, monkey
     tree = _checkout(tmp_path)
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=tree,
         catalog=_catalog(_provider_component()),
@@ -495,7 +614,7 @@ async def test_entry_point_discovery_off_is_not_a_provider_git_arm(
     """``discover_entry_points=False`` with no providers mounts nothing."""
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=_checkout(tmp_path),
         catalog=_catalog(_provider_component()),
@@ -521,7 +640,7 @@ def test_named_store_and_pointer_hang_off_the_resolved_cache_root(
     config = _config(tmp_path)
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=_checkout(tmp_path),
     )
@@ -549,7 +668,7 @@ def test_unset_cache_dir_still_binds_under_the_resolved_default_root(
     assert config.cache_dir is None
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=_checkout(tmp_path),
     )
@@ -585,7 +704,7 @@ def test_the_locator_is_read_once_with_the_project_root(tmp_path, monkeypatch):
     config = _config(tmp_path)
     tree = _checkout(tmp_path)
     monkeypatch.chdir(tmp_path)
-    wiring = _wire(monkeypatch, harness=_LOCATOR, current=_SHA, tree=tree)
+    wiring = _wire(monkeypatch, harness=(_SOURCE,), current=_SHA, tree=tree)
     create_stack(config=config)
     assert len(wiring.settings) == 1
     args, kwargs = wiring.settings[0]
@@ -603,7 +722,7 @@ def test_one_capability_object_reaches_bind_and_both_catalog_calls(
     tree = _checkout(tmp_path)
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=tree,
         catalog=_catalog(_provider_component()),
@@ -632,7 +751,7 @@ def test_worker_provider_is_named_by_component_name_not_id(tmp_path, monkeypatch
     spec = _provider_component()
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=_checkout(tmp_path),
         catalog=_catalog(spec),
@@ -648,7 +767,7 @@ def test_worker_provider_entrypoint_stays_an_unimported_string(tmp_path, monkeyp
     spec = _provider_component()
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=_checkout(tmp_path),
         catalog=_catalog(spec),
@@ -667,7 +786,7 @@ def test_worker_provider_path_is_the_import_root_directory(
     tree = _checkout(tmp_path)
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=tree,
         catalog=_catalog(_provider_component(path=path)),
@@ -682,7 +801,7 @@ async def test_checkout_wins_the_name_and_entry_point_only_planes_pass_through(
     """XOR against ``discover_providers(only_available=True)``, by EP name."""
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=_checkout(tmp_path),
         catalog=_catalog(_provider_component()),
@@ -705,7 +824,7 @@ async def test_core_lifespan_closes_the_collection_and_never_closes_a_worker(
     """``coll.close()`` stays in the core finally; no worker teardown here."""
     wiring = _wire(
         monkeypatch,
-        harness=_LOCATOR,
+        harness=(_SOURCE,),
         current=_SHA,
         tree=_checkout(tmp_path),
         catalog=_catalog(_provider_component()),

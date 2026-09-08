@@ -52,7 +52,7 @@ from .runtime import (
     build_collection,
     resolved_cache_dir,
 )
-from .settings import load_settings
+from .settings import HarnessSource, load_settings
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +82,14 @@ _READ_ONLY = ToolAnnotations(
 #: grammar tomorrow claim runtime support that nothing here implements.
 SUPPORTED_CAPABILITIES = frozenset({"provider-sdk", "harness-catalog"})
 
-#: The three settings that locate the harness repository. A locator is either
-#: all three or none of them; anything between is a configuration error rather
-#: than a value to guess at.
+#: The three coordinates that locate one named harness repository. An entry
+#: carries either all three or none of them; anything between is a
+#: configuration error rather than a value to guess at.
+#:
+#: This is deliberately not ``molmcp.settings._HARNESS_ENTRY_KEYS``, which
+#: also holds ``name``: that set is what a settings-file entry may *write*,
+#: this one is what a named entry must have *filled in* before it can be
+#: served from.
 _HARNESS_KEYS = ("owner", "repo", "ref")
 
 
@@ -306,13 +311,14 @@ def create_stack(
     arm enumerates planes (it runs when *providers* is not injected and
     entry-point discovery is on). Injecting one arm's answer skips that arm
     and only that arm. Injecting both means the caller has answered
-    everything, so the harness locator is never even read.
+    everything, so the harness sources are never even read.
 
     An arm that would reach for the checkout reads
-    :func:`~molmcp.settings.load_settings` once and validates the locator. No
-    locator at all serves exactly as it did before the harness existed; a
-    partial one is a :class:`~molmcp.config.ConfigurationError` rather than a
-    guess at the missing half.
+    :func:`~molmcp.settings.load_settings` once and validates every named
+    source. An empty list — no source named at all — serves exactly as this
+    did before the harness existed; an entry missing a coordinate is a
+    :class:`~molmcp.config.ConfigurationError` rather than a guess at the
+    missing half, and no entry is skipped in favour of the next.
 
     Args:
         collection: Injected discovery collection. Supplying one answers the
@@ -339,9 +345,9 @@ def create_stack(
 
     Raises:
         ValueError: ``molcrafts`` was disabled, or a retired plane was named.
-        ConfigurationError: The harness locator is partial, or the activated
-            commit has no tree on disk. A ``ValueError`` subclass, as are
-            ``CatalogError`` and ``OverlayLoadError``.
+        ConfigurationError: A named harness source is missing a coordinate,
+            or the activated commit has no tree on disk. A ``ValueError``
+            subclass, as are ``CatalogError`` and ``OverlayLoadError``.
         CatalogError: The checkout's ``harness.toml`` failed the catalog
             grammar, or asks for a capability token this runtime does not
             implement. Raised out of either arm's catalog read — see
@@ -365,7 +371,7 @@ def create_stack(
     enumerate_planes = providers is None and discover_entry_points
     plane_config: AppConfig | str | Path | None = config
     checkout: _Checkout | None = None
-    if (build_overlays or enumerate_planes) and _harness_locator() is not None:
+    if (build_overlays or enumerate_planes) and _harness_locator():
         # Resolving here rather than in _activated_checkout keeps the cache
         # root the *same* already-resolved root the collection indexes under.
         plane_config = _resolve_config(config)
@@ -513,46 +519,52 @@ def _resolve_collection(
     return app_config, build_collection(app_config, extras=extras)
 
 
-def _harness_locator() -> dict[str, str] | None:
-    """Read the harness repository locator, or ``None`` when it is unset.
+def _harness_locator() -> tuple[HarnessSource, ...]:
+    """Read every named harness source, in the order the settings list them.
 
     Settings are read once per ``create_stack``, rooted at the working
     directory the way every other caller reads them: a bare ``load_settings()``
-    would hide a project's ``.molmcp/settings.json`` layer, so a locator split
+    would hide a project's ``.molmcp/settings.json`` layer, so a source split
     across the user and project files would look incomplete and be rejected.
 
+    Every entry is checked and none is ever skipped. An entry missing a
+    coordinate is refused rather than passed over in favour of its neighbour,
+    for the same reason no coordinate is defaulted: carrying on from the next
+    entry would serve code from a repository the operator did not select.
+
     Returns:
-        The three locator values, or ``None`` when none of them is set — which
-        is the un-harnessed configuration, not a failure. Serving needs to
-        know only *that* a harness was named: which commit to serve comes from
-        the activation pointer, so ``owner`` / ``repo`` / ``ref`` identify the
+        Every named source in file order, each with all three coordinates
+        filled in, or the empty tuple when no source is named — which is the
+        un-harnessed configuration, not a failure. Serving needs to know only
+        *that* a harness was named: which commit to serve comes from the
+        activation pointer, so ``owner`` / ``repo`` / ``ref`` identify the
         repository to whatever later fetches from it, and no caller on this
         path reads their values.
 
     Raises:
-        ConfigurationError: Some but not all of the three keys are set. The
-            message names the missing ones. Filling them in from a default
-            would fetch code from a repository nobody named.
+        ConfigurationError: An entry sets some but not all of
+            :data:`_HARNESS_KEYS`, including an entry that sets none of them —
+            a named source with no coordinates is a half-written claim, and
+            the empty list is how a harness is left unset. The message names
+            the entry and every field it is missing, because under a list of
+            sources the entry's name is the address an operator goes to fill
+            them in. Filling them in from a default would fetch code from a
+            repository nobody named.
     """
-    harness = load_settings(Path.cwd()).harness
-    present = {
-        key: value
-        for key in _HARNESS_KEYS
-        if (value := str(harness.get(key, "")).strip())
-    }
-    if not present:
-        return None
-    missing = [key for key in _HARNESS_KEYS if key not in present]
-    if missing:
-        named = ", ".join(f"harness.{key}" for key in missing)
+    sources = tuple(load_settings(Path.cwd()).harness)
+    for source in sources:
+        missing = [key for key in _HARNESS_KEYS if not getattr(source, key).strip()]
+        if not missing:
+            continue
+        named = ", ".join(missing)
         raise ConfigurationError(
-            f"the harness locator is incomplete: {named} "
-            f"{'is' if len(missing) == 1 else 'are'} not set. Set "
-            f"{'it' if len(missing) == 1 else 'them'} with `molmcp config set "
-            f"harness.<key> <value>`, or clear the harness settings to serve "
-            f"without a checkout."
+            f"the harness source named {source.name!r} is incomplete: "
+            f"{named} {'is' if len(missing) == 1 else 'are'} not set. Fill "
+            f"{'it' if len(missing) == 1 else 'them'} in on that entry of the "
+            f"`harness` list in your settings file, or remove the entry to "
+            f"serve without it."
         )
-    return present
+    return sources
 
 
 def _activated_checkout(config: AppConfig | str | Path | None) -> _Checkout | None:

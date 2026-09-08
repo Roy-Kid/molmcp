@@ -210,22 +210,90 @@ same command.
 
 ## Where a harness comes from
 
-The repository to fetch from is named by three settings, and it is either all
-three or none of them:
+An install names the repositories it may take a harness from in its settings
+file, under the key `harness`. The value is an **ordered list of named
+sources** rather than a single repository, because one person's tooling is
+routinely several: the one MolCrafts publishes, one a team keeps privately, one
+that belongs to a particular project.
 
-```bash
-molmcp config set harness.owner MolCrafts
-molmcp config set harness.repo harness
-molmcp config set harness.ref main
+```json
+{
+  "harness": [
+    {"name": "official", "owner": "MolCrafts", "repo": "harness", "ref": "main"}
+  ]
+}
 ```
 
-`ref` is the branch or tag a commit is *resolved from*. It is not the commit
-being served — that one is in the activation pointer. A partial locator is a
-configuration error naming the missing keys, rather than a guess: filling in a
-default would mean fetching code from a repository nobody asked for.
+That is a complete `~/.molmcp/settings.json` — the install-wide settings file
+described under [Installation](../get-started/installation.md#settings) — with
+one source named in it.
 
-With no locator set at all, molmcp serves exactly as it did before any of this
-existed. An install with no harness is not a degraded install.
+An entry has four keys and no others. `name` is a label you choose; it is how
+you refer to the entry, and it is the one key an entry may not leave out.
+`owner` and `repo` are the two halves of a GitHub repository path, kept as
+separate keys instead of a single `owner/repo` string so that nothing on this
+path has to parse one. `ref` is the branch or tag a commit is *resolved from* —
+it is not the commit being served, which is the one the activation pointer
+names.
+
+The three coordinates may be left out while an entry is still being written. An
+entry carrying only a `name` loads and is stored exactly as written; what it
+cannot do is serve. At serve time an entry that sets some coordinates but not
+all of them — setting none of them included — is a configuration error naming
+the entry and each field it is missing, rather than a guess. Filling one in
+from a default would mean fetching code from a repository nobody asked for.
+
+**Order is file order, and it is a contract rather than an accident.** Entries
+are read first to last as the file writes them, and the first entry that offers
+something is the one that answers for it. Nothing resolves a component out of a
+source yet — this list is the address book that the code doing that will read —
+but the order is written down now so that the answer never comes to depend on
+the order some dictionary happened to iterate in.
+
+**Across settings files, the most specific list replaces the others; it does
+not merge.** A project's `.molmcp/settings.json` outranks the user file and
+`.molmcp/settings.local.json` outranks both, and the winner's list is the whole
+list. That is worth saying out loud, because it is the *opposite* of `excludes`,
+`knowledgeScope`, `discoverInclude` and `discoverExclude`, which accumulate
+across those same three files. The asymmetry is deliberate: appending a
+first-wins list would put the user file's entries at the front and so let the
+least specific file outrank the most specific one, which is the inverse of what
+every other setting does.
+
+**There is no built-in default source.** molmcp ships no coordinates for
+`MolCrafts/harness` or for anything else, and the entry in the snippet above is
+not a fallback that was already there — it is an operator naming a source, the
+same act as naming any other. All sources are peers. `official` there is simply
+the name chosen for one of them, and the page could as readily have called it
+`mine`; the word does mean something, but as a label on a commit, per the table
+earlier on this page, and never as a privilege of an entry. (That repository is
+also still being stood up: naming a source configures an address, and until the
+commit at the far end of it carries a `harness.toml`, there is nothing there to
+load.)
+
+An install whose `harness` key is absent, or is an empty list, simply has no
+harness, and serves exactly as it did before any of this existed. That is a
+normal configuration, not a degraded one.
+
+### Authoring an entry, and what to do if you mistype one
+
+Entries are written by editing the settings file. **No `molmcp config` verb can
+author one yet.** `harness` is a list whose elements are objects, while every
+`config` write verb takes a single string, so both `set` and `add` refuse the
+key outright and answer with the shape to write instead. A verb that adds and
+removes a source arrives with the next change to this area; until it does, open
+the file.
+
+That makes one pre-existing sharp edge worth stating where you are standing. A
+settings file is validated on every *read*, and every `molmcp config` verb reads
+the file before it writes it. So a typo inside an entry — `"onwer"` where you
+meant `"owner"` — does not merely fail to take effect. `molmcp config list`,
+`get`, `set`, `add` and `remove`, and `molmcp serve` itself, all stop with exit
+status 2 until it is corrected, and the message names the file and the entry by
+position, as `harness[0].onwer`. **The repair is to edit that same file**: the
+one channel that still works is the one you authored the entry through. Nothing
+is lost and nothing needs reinstalling — the file is plain JSON and the fix is a
+text edit.
 
 ## Two repositories, and the older one is leaving
 
@@ -307,4 +375,4 @@ no entry point. A harness is where tools come from, not a tool.
 - [Retiring the old harness marketplace](../guides/harness-migration.md) — the exit runbook
 - [Providers](providers.md) — the other registry, the entry-point one
 - [Provider design](provider-design.md) — what earns a tool slot on any plane
-- [Installation](../get-started/installation.md#settings) — where `harness.owner` / `repo` / `ref` live
+- [Installation](../get-started/installation.md#settings) — the settings files the `harness` list is written in, and the other keys beside it
