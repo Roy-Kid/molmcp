@@ -66,6 +66,8 @@ molmcp config get sources.molpy
 molmcp config set sources.molpy pkg:molpy
 molmcp config add excludes vendor               # list-valued keys
 molmcp config remove sources.molpy
+molmcp config harness set --name official --owner MolCrafts --repo harness --ref main
+molmcp config harness remove --name official
 ```
 
 | Flag | Meaning |
@@ -77,6 +79,14 @@ molmcp config remove sources.molpy
 Layers merge user → project → local. Unknown keys are an error rather than a
 silent no-op. See the [installation guide](../get-started/installation.md#settings)
 for every key.
+
+`harness` holds entry objects rather than strings, so `set` and `add` refuse it
+and the two `config harness` subcommands author it instead: `set` upserts the
+entry named by `--name`, appending an unknown name last, and `remove` drops it.
+Both take the scope flags above. `--owner`, `--repo` and `--ref` are optional,
+so an entry can be written a coordinate at a time; whether one is complete
+enough to serve from is decided at serve time rather than here — see
+[Harness catalog](../concepts/harness.md).
 
 There are **no environment variables**. The two the code still reads are
 secrets, not configuration: the bearer token an HTTP-transport server checks

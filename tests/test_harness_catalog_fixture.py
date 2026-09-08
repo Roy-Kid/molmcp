@@ -11,13 +11,14 @@ parser. This module deliberately defines no catalog type of its own —
 one that drifts.
 
 ``docs/concepts/harness.md`` fences a ``~/.molmcp/settings.json`` snippet whose
-``harness`` value is the list of named sources an install may serve from. That
-snippet is the only place a reader is shown how to author an entry — no
-``molmcp config`` verb can write one yet — so it is held to the same discipline
-as the catalog example one paragraph up: parsed as JSON here, and each entry
-handed to the real :class:`molmcp.settings.HarnessSource`, so a snippet that
-drifts from the type fails the build rather than teaching a shape nothing
-accepts.
+``harness`` value is the list of named sources an install may serve from.
+``molmcp config harness set`` now writes entries into that same file, but the
+snippet is still where a reader is shown the shape — the one a hand-edit has to
+produce, and the one the verb leaves behind — so it is held to the same
+discipline as the catalog example one paragraph up: parsed as JSON here, and
+each entry handed to the real :class:`molmcp.settings.HarnessSource`, so a
+snippet that drifts from the type fails the build rather than teaching a shape
+nothing accepts.
 
 ``docs/guides/harness-migration.md`` is a runbook a human follows. It stops
 before every operation that mutates a repository on GitHub, because each of
@@ -359,10 +360,11 @@ class TestHarnessCatalogFixture:
     ):
         """One snippet, and the page says which file it is.
 
-        Editing that file is the only way to author a source until the
-        ``config`` verb lands, so the page has to name it. Exactly one snippet,
-        because two would be two copies of a contract and one of them would be
-        the stale one.
+        ``config harness set`` writes into that file rather than standing in
+        for it — a file that already fails validation on read is one the verb
+        cannot load either, and still has to be opened — so the page has to
+        say which file it is. Exactly one snippet, because two would be two
+        copies of a contract and one of them would be the stale one.
         """
         assert _SETTINGS_FILE in concept_text
         assert len(settings_snippets) == 1, settings_snippets

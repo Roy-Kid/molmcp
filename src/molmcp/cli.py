@@ -197,6 +197,51 @@ def _build_parser() -> argparse.ArgumentParser:
     _scope_arguments(config_remove)
     config_remove.add_argument("key")
     config_remove.add_argument("value", nargs="?", default=None)
+    config_harness = config_actions.add_parser(
+        "harness",
+        help="Author the named harness sources this install fetches from.",
+    )
+    harness_actions = config_harness.add_subparsers(
+        dest="harness_action", required=True
+    )
+    harness_set = harness_actions.add_parser(
+        "set",
+        help="Upsert one harness source, addressed by --name.",
+    )
+    _scope_arguments(harness_set)
+    harness_set.add_argument(
+        "--name",
+        required=True,
+        help="The entry's address; an unknown one is appended last.",
+    )
+    # Every coordinate defaults to None, never to a value: None means
+    # "leave as it was" to `settings.set_harness_source`, which is what
+    # lets a source be authored by more than one edit.
+    harness_set.add_argument(
+        "--owner",
+        default=None,
+        help="GitHub account or organization; omit to leave it as it was.",
+    )
+    harness_set.add_argument(
+        "--repo",
+        default=None,
+        help="GitHub repository name; omit to leave it as it was.",
+    )
+    harness_set.add_argument(
+        "--ref",
+        default=None,
+        help="Branch or tag; omit to leave it as it was.",
+    )
+    harness_remove = harness_actions.add_parser(
+        "remove",
+        help="Drop the harness source called --name.",
+    )
+    _scope_arguments(harness_remove)
+    harness_remove.add_argument(
+        "--name",
+        required=True,
+        help="The entry's address, matched exactly.",
+    )
 
     cache = commands.add_parser(
         "cache",
@@ -502,6 +547,22 @@ def _config(args: argparse.Namespace) -> int:
     a plane server inherits its working directory from whichever MCP client
     launched it, so a project-scoped default would make configuration
     depend on an accident.
+
+    The branch chain is exhaustive by construction: an action with no
+    branch raises rather than falling through to ``remove_value``, which
+    would delete a setting nobody asked to delete.
+
+    Args:
+        args: The parsed ``config`` namespace, carrying ``config_action``
+            and whichever arguments that action's subparser declares.
+
+    Returns:
+        ``0`` once the read is printed or the write is on disk.
+
+    Raises:
+        ConfigurationError: If ``config_action`` names an action this
+            handler does not dispatch.
+        settings.SettingsError: If the settings layer refuses the write.
     """
     if args.config_action == "list":
         _emit(settings.load_settings(Path.cwd()).to_dict())
@@ -519,11 +580,66 @@ def _config(args: argparse.Namespace) -> int:
         settings.set_value(target, args.key, args.value)
     elif args.config_action == "add":
         settings.add_value(target, args.key, args.value)
-    else:
+    elif args.config_action == "harness":
+        _config_harness(args, target)
+    elif args.config_action == "remove":
         settings.remove_value(target, args.key, args.value)
+    else:
+        raise ConfigurationError(
+            f"unrecognized `molmcp config` action: {args.config_action!r}"
+        )
     print(f"wrote {target}", file=sys.stderr)
     _emit(settings.read_settings_file(target))
     return 0
+
+
+def _config_harness(args: argparse.Namespace, target: Path) -> None:
+    """Author one entry of the ``harness`` list, addressed by its name.
+
+    The string verbs cannot reach this key — ``set`` refuses the bare
+    member of an object list and no dotted path into an entry exists — so
+    these two leaves are its only authoring route. They hold their own
+    branches here rather than inside :func:`_config` so that neither chain
+    has to nest.
+
+    Nothing is checked about *completeness*: ``--name`` alone is a legal
+    write that leaves ``molmcp serve`` refusing until the coordinates
+    arrive. Which entries can be fetched from is ``server``'s question,
+    and a second answer to it here is how the two would drift apart.
+
+    Args:
+        args: The parsed namespace, carrying ``harness_action``, ``name``
+            and — on the ``set`` leaf — ``owner``/``repo``/``ref``, each
+            ``None`` when it was not typed.
+        target: The settings file the scope flags selected.
+
+    Raises:
+        ConfigurationError: If ``harness_action`` names a leaf this
+            handler does not implement.
+        settings.SettingsError: If the settings layer refuses the write.
+    """
+    # Read as a bare attribute, never getattr(args, "harness_action", None):
+    # tests/test_cli_config.py::test_every_registered_config_action_is_dispatched
+    # calls _config(Namespace(config_action="harness")) with nothing else set and
+    # treats only ConfigurationError as "this action is unwired". A getattr default
+    # would fall through to the terminal raise below and report harness as unwired,
+    # turning a green drift guard red. The bare access raises AttributeError, which
+    # that test swallows by design.
+    if args.harness_action == "set":
+        settings.set_harness_source(
+            target,
+            name=args.name,
+            owner=args.owner,
+            repo=args.repo,
+            ref=args.ref,
+        )
+        return
+    if args.harness_action == "remove":
+        settings.remove_harness_source(target, args.name)
+        return
+    raise ConfigurationError(
+        f"unrecognized `molmcp config harness` action: {args.harness_action!r}"
+    )
 
 
 def _cache_hint(

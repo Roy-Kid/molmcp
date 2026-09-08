@@ -74,9 +74,12 @@ _MERGED_LISTS = ("excludes", "knowledgeScope", "discoverInclude", "discoverExclu
 #: This is a declaration, not a merge channel: ``load_settings`` never consults
 #: it, so the next list-of-objects setting closes the same hole by joining this
 #: tuple rather than by someone remembering to add a second branch. Joining it
-#: also means generalizing the key list in the message
-#: ``_reject_object_list_write`` raises — that message names this setting's entry
-#: keys, and nothing fails if it goes on naming only these.
+#: also means shipping a ``molmcp config <member> set`` leaf: the refusal
+#: ``_reject_object_list_write`` raises derives that command from the key, so a
+#: member added without its verb would hand out a command nothing resolves —
+#: which a test asserts against this tuple rather than a docstring promising it.
+#: The entry-key list in that same message is still ``harness``'s own, and
+#: nothing fails if it goes on naming only these.
 #:
 #: ``harness`` is deliberately in no merge channel at all. The default branch of
 #: ``load_settings`` makes the last assignment win, and ``settings_layers``
@@ -316,7 +319,7 @@ def set_value(path: Path, key: str, value: str) -> dict[str, Any]:
             written when it raises: the object-list refusal comes before
             :func:`_resolve`, so a refused write leaves no file behind.
     """
-    _reject_object_list_write(path, key)
+    _reject_object_list_write(key, leaf="set")
     root, leaf, container = _resolve(path, key, create=True)
     container[leaf] = _parse(key, value)
     write_settings_file(path, root)
@@ -339,7 +342,7 @@ def add_value(path: Path, key: str, value: str) -> dict[str, Any]:
             whose elements are objects rather than strings, or if it is not a
             list-valued setting at all. Nothing is written when it raises.
     """
-    _reject_object_list_write(path, key)
+    _reject_object_list_write(key, leaf="set")
     top = key.split(".", 1)[0]
     if _SCHEMA.get(top) is not list:
         raise SettingsError(f"{key!r} is not a list-valued setting; use `config set`")
@@ -354,7 +357,27 @@ def add_value(path: Path, key: str, value: str) -> dict[str, Any]:
 
 
 def remove_value(path: Path, key: str, value: str | None = None) -> dict[str, Any]:
-    """Drop ``key`` outright, or one ``value`` from a list-valued key."""
+    """Drop ``key`` outright, or one ``value`` from a list-valued key.
+
+    Args:
+        path: The settings file to edit; it must already carry the key.
+        key: The key to drop, or the list-valued key to drop ``value`` from.
+        value: One element to drop, or ``None`` to drop ``key`` itself.
+
+    Returns:
+        The whole file as written.
+
+    Raises:
+        SettingsError: If ``key`` is not set in ``path``, if ``value`` is not
+            in its list, or if ``value`` was given for a member of
+            :data:`_OBJECT_LISTS`, whose elements are entry objects that a
+            string cannot address. Only the value arm is guarded — dropping
+            the whole ``harness`` key is a different operation and keeps
+            working — and the guard comes before :func:`_resolve`, so a
+            refused call leaves the file byte for byte as it was.
+    """
+    if value is not None:
+        _reject_object_list_write(key, leaf="remove")
     root, leaf, container = _resolve(path, key, create=False)
     if leaf not in container:
         raise SettingsError(f"{key!r} is not set in {path}")
@@ -369,11 +392,146 @@ def remove_value(path: Path, key: str, value: str | None = None) -> dict[str, An
     return root
 
 
+def set_harness_source(
+    path: Path,
+    *,
+    name: str,
+    owner: str | None = None,
+    repo: str | None = None,
+    ref: str | None = None,
+) -> dict[str, Any]:
+    """Upsert one ``harness`` entry, addressed by its ``name``.
+
+    A coordinate passed ``None`` is left as it was on an entry that already
+    exists and takes the :class:`HarnessSource` default on one that does not,
+    so no coordinate is ever set to a value nobody typed. A ``name`` not
+    already configured is appended **last**: authoring a source never changes
+    which of the already-configured ones wins.
+
+    Two orderings are the contract. The arguments are validated by
+    constructing a :class:`HarnessSource` *before* :func:`_resolve`, the way
+    :func:`set_value` refuses ahead of it, so a refused call leaves no file
+    behind at all. The merged entry is then constructed a second time, after
+    the read and still before the write, which is what leaves the dataclass —
+    never this function — deciding whether the result is legal.
+
+    Args:
+        path: The settings file to edit; created if it does not exist.
+        name: The entry's address, matched against the entries already there.
+        owner: GitHub account or organization, or ``None`` to leave it as is.
+        repo: GitHub repository name, or ``None`` to leave it as is.
+        ref: Branch or tag, or ``None`` to leave it as is.
+
+    Returns:
+        The whole file as written.
+
+    Raises:
+        SettingsError: If :class:`HarnessSource` refuses the arguments or the
+            merged entry — carrying the type's own message — or if the file
+            already on disk fails :func:`read_settings_file`. Nothing is
+            written when it raises.
+    """
+    offered: dict[str, str | None] = {
+        "name": name,
+        "owner": owner,
+        "repo": repo,
+        "ref": ref,
+    }
+    given = {
+        field_name: value
+        for field_name, value in offered.items()
+        if field_name in _HARNESS_ENTRY_KEYS and value is not None
+    }
+    _harness_entry(given)
+    root, leaf, container = _resolve(path, "harness", create=True)
+    entries: list[dict[str, str]] = list(container.get(leaf, []))
+    at = next(
+        (index for index, entry in enumerate(entries) if entry.get("name") == name),
+        None,
+    )
+    merged = _harness_entry({**({} if at is None else entries[at]), **given})
+    if at is None:
+        entries.append(merged)
+    else:
+        entries[at] = merged
+    container[leaf] = entries
+    write_settings_file(path, root)
+    return root
+
+
+def remove_harness_source(path: Path, name: str) -> dict[str, Any]:
+    """Drop the one ``harness`` entry called ``name``, keeping the rest in order.
+
+    Removing the last entry leaves ``"harness": []`` rather than a missing
+    key: dropping the key is ``remove_value(path, "harness")``, a different
+    operation, and an empty list is how a file says it named no source.
+
+    Args:
+        path: The settings file to edit; it must already carry the key.
+        name: The entry's address, matched exactly.
+
+    Returns:
+        The whole file as written.
+
+    Raises:
+        SettingsError: If the file has no ``harness`` key, or carries no entry
+            with that ``name``, or fails :func:`read_settings_file`. Nothing
+            is written when it raises.
+    """
+    root, leaf, container = _resolve(path, "harness", create=False)
+    if leaf not in container:
+        raise SettingsError(f"'harness' is not set in {path}")
+    entries: list[dict[str, str]] = container[leaf]
+    remaining = [entry for entry in entries if entry.get("name") != name]
+    if len(remaining) == len(entries):
+        raise SettingsError(f"{name!r} is not present in 'harness'")
+    container[leaf] = remaining
+    write_settings_file(path, root)
+    return root
+
+
 def get_value(data: dict[str, Any], key: str) -> Any:
-    """Read a dotted ``key`` out of already-parsed settings data."""
+    """Read a dotted ``key`` out of already-parsed settings data.
+
+    A key the data does not carry and a path *through* something that is not
+    an object are different answers, and one condition used to give them the
+    same one. An undeclared key is ``None``, which reads as "unset";
+    ``harness.owner`` is not a path at all now that ``harness`` is a list of
+    named entries, and answering ``None`` there would say that coordinate is
+    unset rather than unreachable — the wrong of the two, and the one that
+    sends an operator looking for a verb to set it with.
+
+    Which case each arm serves is easy to get backwards.
+    :meth:`Settings.to_dict` carries every key, ``cacheDir`` among them, so a
+    bare ``cacheDir`` read answers ``None`` because the *value* is ``None``
+    and the walk ends — never through the missing-key arm at all. That arm is
+    reachable only for keys ``to_dict`` does not carry, ``nope`` and
+    ``sources.nope`` among them. The head is deliberately not checked against
+    :data:`_SCHEMA` either: ``to_dict`` emits ``layers``, which the schema
+    does not declare, so validating here would break a read that works.
+
+    Args:
+        data: One already-merged settings mapping, as
+            :meth:`Settings.to_dict` renders it.
+        key: A top-level key, or ``parent.member`` for a nested read.
+
+    Returns:
+        The value found, or ``None`` if ``key`` names nothing ``data`` carries.
+
+    Raises:
+        SettingsError: If segments remain but the node they would descend
+            into is not an object; the message names the whole key and the
+            segment that is not one.
+    """
     node: Any = data
-    for part in key.split("."):
-        if not isinstance(node, dict) or part not in node:
+    parts = key.split(".")
+    for index, part in enumerate(parts):
+        if not isinstance(node, dict):
+            walked = ".".join(parts[:index])
+            raise SettingsError(
+                f"{key!r} is not a readable path: {walked!r} is not an object"
+            )
+        elif part not in node:
             return None
         node = node[part]
     return node
@@ -425,7 +583,7 @@ def _reject_bad_harness_entries(data: dict[str, Any], path: Path) -> None:
     """
     if "harness" not in data:
         return
-    entries = data["harness"]
+    entries: list[Any] = data["harness"]
     if not isinstance(entries, list):
         raise SettingsError(
             f"'harness' in {path} must be a list of entry objects "
@@ -463,34 +621,44 @@ def _reject_bad_harness_entries(data: dict[str, Any], path: Path) -> None:
         seen.add(source.name)
 
 
-def _reject_object_list_write(path: Path, key: str) -> None:
+def _reject_object_list_write(key: str, *, leaf: str) -> None:
     """Refuse a string-valued edit verb aimed at a list of entry objects.
 
-    Called first by :func:`set_value` and :func:`add_value`, before
-    :func:`_resolve` and therefore before :func:`read_settings_file` and any
-    write. Reaching the write would store ``["x"]`` or append the bare string
+    Called first by :func:`set_value`, :func:`add_value` and the value arm of
+    :func:`remove_value`, before :func:`_resolve` and therefore before
+    :func:`read_settings_file` and any write. For the two writing verbs,
+    reaching the write would store ``["x"]`` or append the bare string
     ``"x"``, and the per-entry validator then rejects that value on the *next*
     read — under ``load_settings``, hence under ``config list``, ``get``,
-    ``set``, ``remove`` and ``serve`` alike, with no verb left to undo it.
+    ``set``, ``remove`` and ``serve`` alike. ``remove_value`` is guarded for
+    the opposite reason: it corrupts nothing, it compares a string against
+    entry objects and reports that ``'official'`` is not present while an
+    entry named ``official`` sits in the file.
 
     Which keys are refused is read from :data:`_OBJECT_LISTS`, so the next
     list-of-objects setting closes this hole by joining that tuple rather than
     by someone remembering to add a second branch here. Only the *bare* key is
     matched: a dotted ``harness.owner`` cannot equal a top-level table entry
     and is already refused by :func:`_resolve`, whose message names the full
-    key. Shadowing that path here would replace a precise message with a
-    vaguer one.
+    key and carries its own pointer at the same verb group. Shadowing that
+    path here would replace a precise message with a vaguer one.
 
-    The shape sentence enumerates :data:`_HARNESS_ENTRY_KEYS`, the only entry
-    type declared today; a second member of :data:`_OBJECT_LISTS` has to
-    generalize that line as it joins. The message names the settings-file
-    shape and no command, because a hint pointing at a verb nothing resolves
-    turns the error into the next error.
+    The command is **derived** — ``molmcp config {key} {leaf}`` — rather than
+    written as a ``harness`` literal, so a second member of
+    :data:`_OBJECT_LISTS` gets a correct message only if it also ships that
+    verb, which a test asserts rather than a comment promising it. The
+    ``leaf`` is the *calling* verb's: answering a refused
+    ``config remove harness official`` with ``... harness set`` would be a
+    precise misdirection, worse than the vague message it replaces. The shape
+    sentence enumerates :data:`_HARNESS_ENTRY_KEYS`, the only entry type
+    declared today; a second member has to generalize that line as it joins.
 
     Args:
-        path: The settings file the caller was about to edit, named in the
-            message because editing it is the only way to author an entry.
         key: The key the caller asked to write, dotted or bare.
+        leaf: The ``config <key>`` leaf that does the job the caller was
+            attempting — ``"set"`` for :func:`set_value` and :func:`add_value`
+            alike, since one entry is authored by name and there is no ``add``
+            leaf, and ``"remove"`` for :func:`remove_value`.
 
     Raises:
         SettingsError: If ``key`` is a bare member of :data:`_OBJECT_LISTS`.
@@ -499,8 +667,8 @@ def _reject_object_list_write(path: Path, key: str) -> None:
         return
     raise SettingsError(
         f"{key!r} is a list of entry objects, not of strings, so it cannot be "
-        f"written one string at a time. Author it by editing {path}: give "
-        f"{key!r} a JSON array whose elements are objects with the keys "
+        f"written one string at a time. Use `molmcp config {key} {leaf}`, "
+        f"which addresses one entry by name; an entry carries the keys "
         f"{{{', '.join(sorted(_HARNESS_ENTRY_KEYS))}}}."
     )
 
@@ -508,14 +676,28 @@ def _reject_object_list_write(path: Path, key: str) -> None:
 def _resolve(
     path: Path, key: str, *, create: bool
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:
-    """Return ``(root, leaf_name, owning_container)`` for a dotted key."""
+    """Return ``(root, leaf_name, owning_container)`` for a dotted key.
+
+    A dotted key whose head is a member of :data:`_OBJECT_LISTS` earns one
+    extra sentence pointing at that key's own verb group. It names no leaf,
+    because this function cannot see whether :func:`set_value` or
+    :func:`remove_value` called it; and a head outside the table keeps the
+    generic message, because pointing ``excludes.foo`` at a harness verb
+    would be a worse error than the vague one it gets today.
+    """
     parts = key.split(".")
     if parts[0] not in _SCHEMA:
         raise SettingsError(
             f"unknown setting {parts[0]!r}. Known keys: {', '.join(sorted(_SCHEMA))}"
         )
     if len(parts) > 2 or (len(parts) == 2 and _SCHEMA[parts[0]] is not dict):
-        raise SettingsError(f"{key!r} is not a settable path")
+        pointer = (
+            f"; {parts[0]!r} is a list of named entries, edited one at a "
+            f"time by `molmcp config {parts[0]}`"
+            if parts[0] in _OBJECT_LISTS
+            else ""
+        )
+        raise SettingsError(f"{key!r} is not a settable path{pointer}")
     allowed = _NESTED_SCHEMA.get(parts[0]) if len(parts) == 2 else None
     if allowed is not None and parts[1] not in allowed:
         raise SettingsError(
@@ -559,6 +741,34 @@ def _parse(key: str, value: str) -> Any:
     return value
 
 
+def _harness_entry(values: dict[str, str]) -> dict[str, str]:
+    """Build one ``harness`` entry, letting the type own every field rule.
+
+    The editing verbs call this both before they read and again on the merged
+    result, so the rules an operator's message quotes are :class:`HarnessSource`'s
+    own — restated nowhere. The ``ValueError`` is re-raised carrying its text,
+    the way :func:`_reject_bad_harness_entries` does for a file on disk;
+    only the address differs, since a verb knows a name where a file knows a
+    position.
+
+    Args:
+        values: The fields to construct with; an omitted one takes the
+            dataclass default rather than being invented here.
+
+    Returns:
+        The entry as a plain dict carrying all four keys.
+
+    Raises:
+        SettingsError: If :class:`HarnessSource` refuses ``values``.
+    """
+    try:
+        return asdict(HarnessSource(**values))
+    except ValueError as exc:
+        raise SettingsError(
+            f"harness source {values.get('name', '')!r}: {exc}"
+        ) from exc
+
+
 def _harness_sources(entries: list[dict[str, str]]) -> tuple[HarnessSource, ...]:
     """Build the entry tuple from a ``harness`` value every layer accepted.
 
@@ -593,7 +803,9 @@ __all__ = [
     "load_settings",
     "project_settings_path",
     "read_settings_file",
+    "remove_harness_source",
     "remove_value",
+    "set_harness_source",
     "set_value",
     "settings_layers",
     "user_settings_path",

@@ -277,23 +277,52 @@ normal configuration, not a degraded one.
 
 ### Authoring an entry, and what to do if you mistype one
 
-Entries are written by editing the settings file. **No `molmcp config` verb can
-author one yet.** `harness` is a list whose elements are objects, while every
-`config` write verb takes a single string, so both `set` and `add` refuse the
-key outright and answer with the shape to write instead. A verb that adds and
-removes a source arrives with the next change to this area; until it does, open
-the file.
+One verb writes the list, and it addresses one entry at a time by its `name`:
 
-That makes one pre-existing sharp edge worth stating where you are standing. A
-settings file is validated on every *read*, and every `molmcp config` verb reads
-the file before it writes it. So a typo inside an entry — `"onwer"` where you
-meant `"owner"` — does not merely fail to take effect. `molmcp config list`,
-`get`, `set`, `add` and `remove`, and `molmcp serve` itself, all stop with exit
-status 2 until it is corrected, and the message names the file and the entry by
-position, as `harness[0].onwer`. **The repair is to edit that same file**: the
-one channel that still works is the one you authored the entry through. Nothing
-is lost and nothing needs reinstalling — the file is plain JSON and the fix is a
-text edit.
+```bash
+molmcp config harness set --name official --owner MolCrafts --repo harness --ref main
+molmcp config harness remove --name official
+```
+
+`--name` is required by both subcommands, because it is the whole address. A
+name already in the list is updated in place; a name that is not yet there is
+appended **last**, which is what keeps the order contract above from turning on
+the act of adding a source. The three coordinates are optional and default to
+nothing rather than to a value: leaving `--owner` off an entry that already has
+one keeps the one it has, and leaving it off a new entry leaves it empty. That
+is what lets a single entry be built up over several commands. Both subcommands
+take the same `--project` and `--local` scope flags as every other `config`
+write, and with neither they write the user file.
+
+They exist because the ordinary write verbs cannot reach this key. `harness` is
+a list whose elements are objects, while `config set` and `config add` each take
+one string, so both refuse the key outright and answer with the shape of an
+entry and the verb that authors one. Reading is unchanged: `molmcp config list`
+and `molmcp config get harness` each print the list whole. There is no dotted
+path into an individual entry — a dotted read into this key addresses nothing,
+and it exits 2 saying so rather than answering `null`, which would have claimed
+a coordinate was merely unset.
+
+Two things this verb deliberately does not do, and you will meet both.
+
+**It will write an entry that cannot serve.**
+`molmcp config harness set --name mine` exits 0 and stores
+`{"name": "mine", "owner": "", "repo": "", "ref": ""}` — the half-written state
+described above — and then every `molmcp serve` after it exits 2, naming `mine`
+and each coordinate it is missing, until they are filled in. The verb does not
+pre-empt that, on purpose: what counts as a complete entry is decided at serve
+time and in exactly one place, and a second copy of that rule inside a `config`
+verb is how the two would come to disagree about a file they both read.
+
+**It cannot repair a settings file that no longer loads.** A settings file is
+validated on every *read*, and this verb reads the file before it writes it,
+exactly like every other one. So a typo inside an entry — `"onwer"` where you
+meant `"owner"` — does not merely fail to take effect, and no verb can undo it.
+`molmcp config list`, `get`, `set`, `add`, `remove` and `harness`, and
+`molmcp serve` itself, all stop with exit status 2 until it is corrected, and
+the message names the file and the entry by position, as `harness[0].onwer`.
+**The repair is to open that file in an editor.** Nothing is lost and nothing
+needs reinstalling — the file is plain JSON and the fix is a text edit.
 
 ## Two repositories, and the older one is leaving
 

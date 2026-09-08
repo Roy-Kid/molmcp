@@ -14,7 +14,7 @@ import pytest
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from molmcp import CollectionIndex, create_plane, create_stack, runtime, server
+from molmcp import CollectionIndex, cli, create_plane, create_stack, runtime, server
 from molmcp.components import (
     ALLOWED_REQUIRES,
     BundleSpec,
@@ -533,6 +533,43 @@ def test_the_real_locator_reads_an_empty_settings_file_as_no_harness(
     """The unfaked reader on a stock install: ``()``, not an error."""
     _home_settings(tmp_path, monkeypatch, {})
     assert server._harness_locator() == ()
+
+
+def test_a_name_only_entry_from_the_verb_makes_the_real_locator_raise(
+    tmp_path, monkeypatch
+):
+    """The serve-time price of a half-authored entry, paid end to end.
+
+    ``molmcp config harness set --name mine`` exits 0 — the settings layer
+    accepts a named entry with no coordinates on purpose, because
+    :data:`server._HARNESS_KEYS` is the *only* completeness rule and the CLI
+    deliberately does not carry a second copy of it. The cost is that every
+    subsequent ``molmcp serve`` refuses until the coordinates arrive, and
+    that cost belongs in a test rather than in an operator's afternoon: the
+    incomplete-entry raise has no other coverage in this suite.
+
+    Both halves are real. The write goes through ``cli.main`` to the actual
+    ``settings.set_harness_source`` and lands on disk, and the read is the
+    unfaked ``_harness_locator``. The ``_wire`` seam every composition test
+    above uses is deliberately absent here — a faked seam is what let a
+    broken reader of this exact key look green once already.
+
+    The expected field names are derived from ``server._HARNESS_KEYS``, never
+    written out as ``owner, repo, ref``. A literal triple would pass just as
+    well against ``settings._HARNESS_ENTRY_KEYS``, which also carries
+    ``name``, erasing the distinction ``server.py`` documents between what an
+    entry may write and what it must have filled in.
+    """
+    _home_settings(tmp_path, monkeypatch, {})
+
+    assert cli.main(["config", "harness", "set", "--name", "mine"]) == 0
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        server._harness_locator()
+
+    message = str(excinfo.value)
+    assert "mine" in message
+    assert [key for key in server._HARNESS_KEYS if key not in message] == []
 
 
 async def test_absent_current_falls_back_without_resolving_or_promoting(

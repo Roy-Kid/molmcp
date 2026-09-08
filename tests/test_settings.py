@@ -157,6 +157,236 @@ class TestSettingsEdit:
         assert data["maxCacheBytes"] == 1048576
 
 
+class TestHarnessSourceEdit:
+    """The two verbs that address one ``harness`` entry by its ``name``.
+
+    ``harness`` is a list of objects, so the string-valued verbs one class
+    below refuse it outright; these are what authors an entry instead of an
+    editor. They do not retire the editor: they write into a file that
+    already parses, so one that fails validation on read still needs one.
+    The address is the ``name``, never a position: an already-configured name is
+    updated in place and an unknown one is appended **last**, so authoring a
+    second source never changes which of the existing ones wins.
+
+    A coordinate left out is left alone — ``None`` means "as it was" on an
+    entry that exists and the dataclass default on one that does not — so no
+    coordinate is ever set to a value nobody typed. Half-authored entries
+    are the documented model: a ``name``-only write is accepted here, and
+    whether an entry is complete enough to fetch with stays a serve-time
+    question.
+
+    Two orderings are binding rather than incidental. Arguments are
+    validated by constructing a :class:`~molmcp.settings.HarnessSource`
+    *before* the file is read, so a refused call leaves no file behind at
+    all; and dropping the last entry leaves ``"harness": []`` rather than
+    removing the key, which is ``remove_value``'s different job. No field
+    rule is restated here — the message an operator reads is the
+    dataclass's own.
+    """
+
+    def test_a_four_field_call_writes_one_entry_that_round_trips(self, home, tmp_path):
+        st.set_harness_source(
+            st.user_settings_path(),
+            name="official",
+            owner="MolCrafts",
+            repo="harness",
+            ref="main",
+        )
+
+        assert json.loads(st.user_settings_path().read_text()) == {
+            "harness": [
+                {
+                    "name": "official",
+                    "owner": "MolCrafts",
+                    "repo": "harness",
+                    "ref": "main",
+                }
+            ]
+        }
+        assert st.load_settings(tmp_path / "repo").harness == (
+            st.HarnessSource(
+                name="official", owner="MolCrafts", repo="harness", ref="main"
+            ),
+        )
+
+    def test_a_second_call_with_the_same_name_updates_that_entry_in_place(self, home):
+        path = st.user_settings_path()
+        st.set_harness_source(
+            path, name="mine", owner="acme", repo="harness", ref="main"
+        )
+
+        st.set_harness_source(path, name="mine", ref="dev")
+
+        entries = json.loads(path.read_text())["harness"]
+        assert len(entries) == 1
+        assert entries[0] == {
+            "name": "mine",
+            "owner": "acme",
+            "repo": "harness",
+            "ref": "dev",
+        }
+
+    def test_an_unknown_name_is_appended_last_leaving_the_first_entry_first(self, home):
+        path = st.user_settings_path()
+        st.set_harness_source(path, name="official", owner="MolCrafts")
+
+        st.set_harness_source(path, name="mine", owner="acme")
+
+        entries = json.loads(path.read_text())["harness"]
+        assert [entry["name"] for entry in entries] == ["official", "mine"]
+
+    def test_a_name_alone_writes_a_half_authored_entry_that_still_loads(
+        self, home, tmp_path
+    ):
+        path = st.user_settings_path()
+
+        st.set_harness_source(path, name="mine")
+
+        assert json.loads(path.read_text())["harness"] == [
+            {"name": "mine", "owner": "", "repo": "", "ref": ""}
+        ]
+        assert st.load_settings(tmp_path / "repo").harness == (
+            st.HarnessSource(name="mine"),
+        )
+
+    def test_a_refused_call_creates_no_file_at_all(self, home):
+        with pytest.raises(st.SettingsError):
+            st.set_harness_source(
+                st.user_settings_path(), name="mine", owner="acme/harness"
+            )
+
+        assert not st.user_settings_path().exists()
+
+    @pytest.mark.parametrize("coordinate", ["owner", "repo", "ref"])
+    def test_the_dataclass_message_is_the_one_the_operator_reads(
+        self, home, coordinate
+    ):
+        with pytest.raises(ValueError) as from_the_type:
+            st.HarnessSource(name="mine", **{coordinate: "acme harness"})
+
+        with pytest.raises(st.SettingsError) as from_the_verb:
+            st.set_harness_source(
+                st.user_settings_path(), name="mine", **{coordinate: "acme harness"}
+            )
+
+        assert str(from_the_type.value) in str(from_the_verb.value)
+
+    def test_remove_drops_the_named_entry_and_leaves_the_others_in_order(self, home):
+        path = st.user_settings_path()
+        for name in ("first", "second", "third"):
+            st.set_harness_source(path, name=name, owner="acme")
+
+        st.remove_harness_source(path, "second")
+
+        entries = json.loads(path.read_text())["harness"]
+        assert [entry["name"] for entry in entries] == ["first", "third"]
+
+    def test_removing_the_last_entry_leaves_an_empty_list_not_a_missing_key(
+        self, home, tmp_path
+    ):
+        path = st.user_settings_path()
+        st.set_harness_source(path, name="mine", owner="acme")
+
+        st.remove_harness_source(path, "mine")
+
+        assert json.loads(path.read_text())["harness"] == []
+        assert st.load_settings(tmp_path / "repo").harness == ()
+
+    def test_removing_an_absent_name_reports_that_name(self, home):
+        path = st.user_settings_path()
+        st.set_harness_source(path, name="mine", owner="acme")
+
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.remove_harness_source(path, "official")
+
+        assert "official" in str(excinfo.value)
+
+    def test_removing_from_a_file_with_no_harness_key_reports_the_file(self, home):
+        path = st.user_settings_path()
+        _write(path, {"indexWorkspace": True})
+
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.remove_harness_source(path, "mine")
+
+        assert str(path) in str(excinfo.value)
+
+    def test_both_verbs_join_all_beside_the_verb_they_extend(self):
+        assert (
+            st.__all__.index("remove_harness_source")
+            == st.__all__.index("remove_value") - 1
+        )
+        assert (
+            st.__all__.index("set_harness_source") == st.__all__.index("set_value") - 1
+        )
+
+
+class TestGetValueWalk:
+    """The dotted read, whose one condition was doing the work of two.
+
+    A key the data does not carry and a path *through* something that is
+    not an object are different answers. An undeclared key is ``null``,
+    which reads as "unset"; ``harness.owner`` is not a path at all now that
+    ``harness`` is a list of named entries, and answering ``null`` there
+    tells an operator the coordinate is unset rather than unreachable —
+    the wrong of the two errors, and the one that sends them looking for a
+    verb to set it with.
+
+    Which case each arm actually serves is easy to get backwards.
+    ``Settings.to_dict()`` always carries every key, ``cacheDir`` among
+    them, so a bare ``cacheDir`` read answers ``None`` because the *value*
+    is ``None`` and the walk ends — never through the missing-key arm at
+    all. That arm is reachable only for keys ``to_dict()`` does not carry:
+    ``nope`` and ``sources.nope``. Both are pinned below, because they are
+    what keeps this fix narrow.
+
+    The head key is deliberately not checked against ``_SCHEMA``:
+    ``to_dict()`` emits ``layers``, which ``_SCHEMA`` does not declare, so
+    validating there would break a read that works today.
+    """
+
+    @pytest.mark.parametrize(
+        "key",
+        ["harness.owner", "cacheDir.x", "excludes.x", "indexWorkspace.x", "layers.x"],
+    )
+    def test_descending_through_a_non_object_names_the_key_it_cannot_walk(self, key):
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.get_value(st.Settings().to_dict(), key)
+
+        assert key in str(excinfo.value)
+
+    def test_an_undeclared_top_level_key_still_reads_as_null(self):
+        data = st.Settings().to_dict()
+
+        assert "nope" not in data
+        assert st.get_value(data, "nope") is None
+
+    def test_an_undeclared_member_of_a_dict_setting_still_reads_as_null(self):
+        data = st.Settings().to_dict()
+
+        assert "nope" not in data["sources"]
+        assert st.get_value(data, "sources.nope") is None
+
+    def test_an_unset_value_reads_as_null_by_the_other_route_entirely(self):
+        data = st.Settings().to_dict()
+
+        assert "cacheDir" in data
+        assert st.get_value(data, "cacheDir") is None
+
+    def test_a_key_the_schema_does_not_declare_is_read_rather_than_validated(
+        self, tmp_path
+    ):
+        layer = tmp_path / "settings.json"
+        data = st.Settings(layers=(layer,)).to_dict()
+
+        assert "layers" not in st._SCHEMA
+        assert st.get_value(data, "layers") == [str(layer)]
+
+    def test_a_dotted_read_into_a_dict_setting_still_returns_the_member(self):
+        data = st.Settings(sources={"molpy": "pkg:molpy"}).to_dict()
+
+        assert st.get_value(data, "sources.molpy") == "pkg:molpy"
+
+
 class TestHarnessWriteGuard:
     """The string-valued edit verbs cannot author a list of objects.
 
@@ -166,10 +396,19 @@ class TestHarnessWriteGuard:
     reach ``write_settings_file`` *before* anything validates, and the
     per-entry validator then rejects ``"x"`` on the next read — under
     ``load_settings``, hence under ``config list``, ``get``, ``set``,
-    ``remove`` and ``serve`` alike. No CLI verb can undo that, so the file
-    has to be hand-edited to make the install usable again. The binding
-    assertions are therefore that the call raises, that **no file is
-    created**, and that a later ``load_settings`` still works.
+    ``remove`` and ``serve`` alike. ``config harness set`` is no rescue
+    from that state: it reads through ``read_settings_file`` like every
+    other verb, so it cannot repair a file it cannot load, and that file
+    still has to be hand-edited to make the install usable again. The
+    binding assertions are therefore that the call raises, that **no file
+    is created**, and that a later ``load_settings`` still works.
+
+    What the guard protects is the line between the two kinds of verb, not
+    the absence of a writer. ``set`` and ``add`` take a string and still
+    refuse this key, because a string verb cannot author a list of
+    objects; the verb that can is ``config harness set``, which addresses
+    one entry by its ``name`` (``TestHarnessSourceEdit``, above). That is
+    why the refusals below name a command rather than an editor.
 
     The refusal is reached through the declared ``_OBJECT_LISTS`` table
     rather than a ``"harness"`` literal in either function body, so the next
@@ -199,6 +438,36 @@ class TestHarnessWriteGuard:
 
         assert st.load_settings(tmp_path / "repo").harness == ()
 
+    @pytest.mark.parametrize("member", st._OBJECT_LISTS)
+    def test_the_refusal_names_the_verb_it_derives_from_the_key(self, home, member):
+        """The command is built from ``key``, so the table stays truthful.
+
+        A message that hand-wrote ``harness`` would go stale the day a
+        second list of objects joined :data:`_OBJECT_LISTS`, which is the
+        drift the table exists to prevent. Naming a verb is only possible
+        now that one resolves; until this link there was none, which is
+        why the message pointed at an editor instead.
+        """
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.set_value(st.user_settings_path(), member, "x")
+
+        assert f"molmcp config {member} set" in str(excinfo.value)
+        assert "by editing" not in str(excinfo.value)
+
+    def test_the_add_refusal_names_the_set_leaf_the_parser_registers(self, home):
+        """``config add harness x`` is answered with the leaf that exists.
+
+        There is no ``config harness add``: one entry is authored by name,
+        and appending is what ``config harness set`` does with a name it
+        has not seen. Naming an unregistered leaf here would turn this
+        error message into the next error.
+        """
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.add_value(st.user_settings_path(), "harness", "x")
+
+        assert "molmcp config harness set" in str(excinfo.value)
+        assert "by editing" not in str(excinfo.value)
+
     @pytest.mark.parametrize("member", ["owner", "dev"])
     def test_set_refuses_every_dotted_harness_key_not_only_a_stray_one(
         self, home, member
@@ -207,7 +476,60 @@ class TestHarnessWriteGuard:
             st.set_value(st.user_settings_path(), f"harness.{member}", "x")
 
         assert f"harness.{member}" in str(excinfo.value)
+        assert "molmcp config harness" in str(excinfo.value)
         assert not st.user_settings_path().exists()
+
+    def test_the_dotted_refusal_is_reached_from_remove_as_well_as_set(self, home):
+        """One sentence serves both leaves, because ``_resolve`` serves both.
+
+        ``_resolve`` is where a dotted key is refused and it cannot see
+        which verb called it, so its sentence names the ``config harness``
+        verbs rather than only ``set``.
+        """
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.remove_value(st.user_settings_path(), "harness.owner")
+
+        assert "harness.owner" in str(excinfo.value)
+        assert "molmcp config harness" in str(excinfo.value)
+
+    @pytest.mark.parametrize("key", ["excludes.foo", "cacheDir.x"])
+    def test_a_dotted_key_outside_the_table_keeps_the_generic_message(self, home, key):
+        """Only an ``_OBJECT_LISTS`` head earns the friendlier sentence.
+
+        ``excludes`` and ``cacheDir`` are not lists of entry objects, and
+        pointing them at a harness verb would be a worse error than the
+        vague one they get today.
+        """
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.set_value(st.user_settings_path(), key, "x")
+
+        assert str(excinfo.value) == f"{key!r} is not a settable path"
+
+    def test_remove_refuses_its_value_arm_and_names_the_remove_leaf(self, home):
+        """A remove is answered with a remove, not with a set.
+
+        ``remove_value``'s list arm compares a string against entry
+        objects, so ``config remove harness official`` reported that
+        ``'official'`` was not present while an entry named ``official``
+        sat in the file — vague when entries were unnamed, actively false
+        now that they are named. The guard extends to this arm only:
+        dropping the whole key is a different operation, pinned by
+        ``test_remove_still_clears_the_key_and_leaves_a_loadable_file``
+        below. Answering a remove with ``config harness set`` would be a
+        precise misdirection, which is worse than the vague message it
+        replaces.
+        """
+        path = st.user_settings_path()
+        _write(path, {"harness": [{"name": "official", "owner": "acme"}]})
+        before = path.read_text(encoding="utf-8")
+
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.remove_value(path, "harness", "official")
+
+        assert "molmcp config harness remove" in str(excinfo.value)
+        assert "molmcp config harness set" not in str(excinfo.value)
+        assert "is not present in" not in str(excinfo.value)
+        assert path.read_text(encoding="utf-8") == before
 
     def test_remove_still_clears_the_key_and_leaves_a_loadable_file(
         self, home, tmp_path
