@@ -128,8 +128,10 @@ _Generated 2026-09-08 by /mol:map._
 - **`molmcp.settings`** — `Settings`, `SettingsError`, `load_settings`,
   `settings_layers`, `user_settings_path`, `project_settings_path`,
   `read_settings_file`, `write_settings_file`, `get_value`, `set_value`,
-  `add_value`, `remove_value`. `Settings` carries `harness` (`{owner, repo, ref}`)
-  alongside `sources`, `cache_dir`, `knowledge_scope`, `molexp`, `molq`, …
+  `add_value`, `remove_value`, `HarnessSource`. `Settings` carries `harness`
+  (an ordered `tuple[HarnessSource, ...]`; each entry has `name`, `owner`,
+  `repo`, `ref`, and the first entry wins) alongside `sources`, `cache_dir`,
+  `knowledge_scope`, `molexp`, `molq`, …
 - **`molmcp.components`** — `Activation`, `HarnessCatalog`, `ResolvedBundle`,
   `load_harness_catalog`, `GitTransport`, `GitHubTransport`, `GitError`,
   `extract_git_archive`, `ImmutableGitStore`, `BundleSpec`, `ComponentSpec`,
