@@ -141,7 +141,7 @@ Caller 未附 `librarian_report`（本轮为 architect 🔴 后重拟）。对�
 
 ## Tasks
 
-- [ ] Write failing unit tests for run_gate (tests/test_gate.py → TestRunGate) and fixture trees tests/fixtures/gate/contract-fail/ plus tests/fixtures/gate/wired/
+- [x] Write failing unit tests for run_gate (tests/test_gate.py → TestRunGate) and fixture trees tests/fixtures/gate/contract-fail/ plus tests/fixtures/gate/wired/
 - [ ] Implement CHECK_NAME, PR_JOB_ID, SCHEDULE_JOB_ID, GATE_RUN, GateReport, run_gate in src/molmcp/gate.py (Google-style docstring; no os.environ; no --full, no evaluate parameter)
 - [ ] Write failing tests for CLI dispatch (tests/test_cli_vnext.py) and repo-file parity (tests/test_gate.py → TestOfficialGateParity)
 - [ ] Implement the gate subcommand in src/molmcp/cli.py (handlers only; no --full, no --skip, no --profile, no --json)

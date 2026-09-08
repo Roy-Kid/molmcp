@@ -3,16 +3,16 @@ slug: autonomous-harness-evolution-13-ci-gate
 created: 2026-09-04
 criteria:
   - id: ac-001
-    summary: Cheap run_gate never calls evaluate; --full does
+    summary: run_gate takes only root and never reaches for an evaluator
     type: code
     pass_when: |
-      tests/test_gate.py::TestRunGate shows run_gate(full=False) on champion-eq-challenger succeeds even when the injected evaluate callable raises, and run_gate(full=True, evaluate=recording_fn) calls that callable once with the same root.
+      inspect.signature(molmcp.gate.run_gate) has exactly one parameter, keyword-only `root`, with no default — no full, no evaluate, no skip, no profile. molmcp.gate has no FULL_RUN, no CHEAP_RUN and no GATE_PROFILE attribute. src/molmcp/gate.py imports nothing whose name contains evaluate, and spawns no process.
     status: pending
   - id: ac-002
-    summary: contract-fail fails; champion-eq-challenger passes cheap
+    summary: contract-fail fails; wired passes
     type: runtime
     pass_when: |
-      run_gate(root=tests/fixtures/gate/contract-fail, full=False).ok is False, and run_gate(root=tests/fixtures/gate/champion-eq-challenger, full=False).ok is True.
+      run_gate(root=tests/fixtures/gate/contract-fail).ok is False with a non-empty failed naming the inconsistency, and run_gate(root=tests/fixtures/gate/wired).ok is True with failed == ().
     status: pending
   - id: ac-003
     summary: Required check name is official/gate, not job id gate
@@ -21,22 +21,22 @@ criteria:
       molmcp.gate.CHECK_NAME == "official/gate"; .github/workflows/official-gate.yml job id official-gate has name: official/gate; no job in that file has id gate; release.yml still has jobs.gate.
     status: pending
   - id: ac-004
-    summary: Two jobs, literal run: strings, no env profile
+    summary: Two jobs, one literal run:, no env profile
     type: code
     pass_when: |
-      official-gate.yml defines official-gate (if: github.event_name != 'schedule', run: uv run molmcp gate --full) and official-gate-schedule (name other than official/gate, if: github.event_name == 'schedule', run: uv run molmcp gate); every run: is a single-line scalar with no ${{; neither job has env: selecting a profile; uv sync --extra dev is a prior Install step.
+      official-gate.yml defines official-gate (if: github.event_name != 'schedule') and official-gate-schedule (name other than official/gate, if: github.event_name == 'schedule'), and BOTH gate steps run the same literal `uv run molmcp gate`; every run: is a single-line scalar with no ${{; neither job has env: selecting a profile; uv sync --extra dev is a prior Install step.
     status: pending
   - id: ac-005
-    summary: PR run: and pre-commit entry: equal FULL_RUN
+    summary: PR run: and pre-commit entry: equal GATE_RUN
     type: code
     pass_when: |
-      TestOfficialGateParity reads only the PR job's molmcp-gate run: and the official-gate hook entry: and asserts both equal the literal uv run molmcp gate --full (molmcp.gate.FULL_RUN); neither token contains uv sync or bash -c.
+      TestOfficialGateParity reads only the PR job's molmcp-gate run: and the official-gate hook entry: and asserts both equal the literal `uv run molmcp gate` (molmcp.gate.GATE_RUN); neither token contains uv sync or bash -c.
     status: pending
   - id: ac-006
     summary: official-gate hook is pre-push only
     type: code
     pass_when: |
-      .pre-commit-config.yaml hook id official-gate has stages: [pre-push] and entry: uv run molmcp gate --full; the pre-commit (commit) stage still has ci-lint and does not list official-gate.
+      .pre-commit-config.yaml hook id official-gate has stages: [pre-push] and entry: uv run molmcp gate; the pre-commit (commit) stage still has ci-lint and does not list official-gate.
     status: pending
   - id: ac-007
     summary: ci.yml product matrix and ci.config stay put
@@ -45,22 +45,16 @@ criteria:
       .github/workflows/ci.yml still has the OS/Python matrix and contains no molmcp gate; CLAUDE.md and AGENTS.md mol_project.ci.config remain .github/workflows/ci.yml.
     status: pending
   - id: ac-008
-    summary: CLI dispatches gate/--full and has no --skip
+    summary: CLI dispatches gate with no flags
     type: code
     pass_when: |
-      tests/test_cli_vnext.py shows cli.main(["gate"]) calls run_gate with full=False, cli.main(["gate", "--full"]) calls it with full=True, _gate contains no verdict logic beyond run_gate, and cli.main(["gate", "--skip"]) exits non-zero via argparse.
+      tests/test_cli_vnext.py shows cli.main(["gate"]) calls run_gate with root=Path.cwd() and returns 0 when ok, 1 otherwise; _gate contains no verdict logic beyond run_gate; the gate subparser accepts no flags, so cli.main(["gate", "--full"]) and cli.main(["gate", "--skip"]) both exit non-zero via argparse.
     status: pending
   - id: ac-009
     summary: Parity sentence outside managed; CLI docs name gate
     type: docs
     pass_when: |
-      After <!-- mol:bootstrap:managed end --> in both CLAUDE.md and AGENTS.md a sentence states pair 1 (ci-lint/ci-test ≡ ci.yml lint/test run:) and pair 2 (official-gate pre-commit entry: ≡ official-gate.yml PR job run: ≡ uv run molmcp gate --full), and names the schedule uv run molmcp gate as a third invocation; docs/reference/cli.md documents molmcp gate and --full.
-    status: pending
-  - id: ac-010
-    summary: Regression pins official/gate literals and fixture verdicts
-    type: runtime
-    pass_when: |
-      regressions/autonomous-harness-evolution-13-ci-gate.py exits 0 asserting CHECK_NAME == "official/gate", FULL_RUN == "uv run molmcp gate --full", CHEAP_RUN == "uv run molmcp gate", the repo PR job run: and pre-commit official-gate entry: equal FULL_RUN, cli.main(["gate"]) == 0 on the champion-eq-challenger fixture, and cli.main(["gate"]) == 1 on the contract-fail fixture.
+      After <!-- mol:bootstrap:managed end --> in both CLAUDE.md and AGENTS.md a sentence states pair 1 (ci-lint/ci-test = ci.yml lint/test run:) and pair 2 (official-gate pre-commit entry: = official-gate.yml PR job run: = uv run molmcp gate); docs/reference/cli.md documents molmcp gate.
     status: pending
 out_of_scope:
   - Changing ci.yml OS/Python matrix or folding official/gate into ci.yml
@@ -78,30 +72,19 @@ out_of_scope:
 正确性证明由 `tests/` 下的单元与结构性守卫承担。
 
 
-## 2026-09-07 修订：`--full` 已删除
-
-下列条目中凡提到 `--full` / `FULL_RUN` / `evaluate` 的部分作废，理由见 spec 正文
-同日期修订节：评估要起两个 subagent，GitHub runner 里没有 agent，`--full` 在 CI
-上不可能执行；且它要 import 的 `molmcp.evaluate` 从来不存在（spec 11 交付的是
-`molmcp.evolution.evaluate`，签名完全不同）。
-
-判定改为：唯一调用字面量是 `GATE_RUN = "uv run molmcp gate"`；`run_gate(*, root)`
-无 `evaluate` 参数；`GateReport` 无 `full` 字段；parity pair 2 是
-pre-commit `entry:` ≡ PR job `run:` ≡ `GATE_RUN`。评估另起 spec `harness-evaluator`，
-不进 required check。
 
 
 # Acceptance criteria
 
-Done means: the unique required check is named `official/gate`; PR and pre-push run the literal `uv run molmcp gate --full`; schedule runs `uv run molmcp gate`; `ci.yml` is untouched as the package matrix; `gate.py` owns the verdict; `cli.py` only dispatches.
+Done means: the unique required check is named `official/gate`; PR, schedule and pre-push all run the one literal `uv run molmcp gate`; `ci.yml` is untouched as the package matrix; `gate.py` owns the verdict; `cli.py` only dispatches. Evaluation is NOT here — it needs two subagents and a GitHub runner has none; `harness-evaluator` owns it, developer-side.
 
-## AC-001 — Cheap skips evaluate
+## AC-001 — One profile, no evaluator seam
 
 `run_gate` 的 `full` 布尔是唯一档位。廉价路径不得 import spec 11。
 
 ## AC-002 — Fixture verdicts
 
-`contract-fail` 必须红，`champion-eq-challenger` 廉价必须绿。这是判决函数的契约，不是 e2e。
+`contract-fail` 必须红，`wired` 廉价必须绿。这是判决函数的契约，不是 e2e。
 
 ## AC-003 — Check name vs job id
 
@@ -129,7 +112,7 @@ official-gate 只在 pre-push（和 PR）。commit 档仍是 `ci-lint`。
 
 ## AC-009 — Parity prose survives bootstrap
 
-两对 parity 的句子写在 managed 标记外，CLAUDE.md 与 AGENTS.md 同一 commit；`docs/reference/cli.md` 写上 `gate` / `--full`。
+两对 parity 的句子写在 managed 标记外，CLAUDE.md 与 AGENTS.md 同一 commit；`docs/reference/cli.md` 写上 `gate`。
 
 ## AC-010 — Regression
 
