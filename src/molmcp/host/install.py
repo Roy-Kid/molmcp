@@ -70,6 +70,20 @@ def _write(dest: Path, text: str) -> Path:
     return dest
 
 
+def _usage_skill_file() -> Path:
+    """Locate the packaged usage constitution ``SKILL.md``.
+
+    The lookup happens here and nowhere else, so a checkout and an installed
+    wheel name the same file: package data puts ``SKILL.md`` beside
+    ``molmcp/skill/__init__.py`` in both, leaving no second location to fall
+    back to.
+
+    Returns:
+        Path of the ``SKILL.md`` shipped inside :mod:`molmcp.skill`.
+    """
+    return Path(str(files("molmcp.skill") / "SKILL.md"))
+
+
 def _copy_files(source: Path, dest: Path) -> tuple[Path, ...]:
     """Copy every file under *source* into *dest*, keeping relative layout.
 
@@ -115,20 +129,17 @@ def resolve_bundle_source(source: Path | None) -> Path | None:
     return source
 
 
-def skill_template() -> str:
-    """Usage constitution shipped with this molmcp version.
-
-    Returns:
-        The text of the packaged ``molmcp.skill/SKILL.md``.
-    """
-    return (files("molmcp.skill") / "SKILL.md").read_text(encoding="utf-8")
-
-
 def install_skill(host: Host) -> Path:
     """Overwrite the managed usage skill for *host*.
 
-    Writes :func:`skill_template` and nothing else: the adapter pointer and
-    the daily bundle have their own primitives.
+    The packaged ``SKILL.md`` is *copied*, not re-rendered from a template.
+    Copying gives a checkout and a PyPI wheel one path — package data places
+    the same file beside :mod:`molmcp.skill` either way — so the constitution
+    lands byte-identical, mode and modification time included, and there is
+    no rendering step that could drift from the file it claims to reproduce.
+
+    Only the usage constitution is written: the adapter pointer and the daily
+    bundle have their own primitives.
 
     Args:
         host: One of the known hosts.
@@ -138,9 +149,15 @@ def install_skill(host: Host) -> Path:
 
     Raises:
         ValueError: If *host* is not a known host.
+        OSError: If the packaged ``SKILL.md`` cannot be read; that is a
+            broken installation, which :func:`molmcp.cli.main` already
+            reports as a message rather than a traceback.
     """
     skill_dir = _home_path(layout_for(host).skill_dir)
-    return _write(skill_dir / "SKILL.md", skill_template())
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    dest = skill_dir / "SKILL.md"
+    shutil.copy2(_usage_skill_file(), dest)
+    return dest
 
 
 def materialize_daily(host: Host, source: Path | None) -> tuple[Path, ...]:
@@ -279,6 +296,5 @@ __all__ = [
     "materialize_daily",
     "materialize_dev_index",
     "resolve_bundle_source",
-    "skill_template",
     "write_adapter",
 ]

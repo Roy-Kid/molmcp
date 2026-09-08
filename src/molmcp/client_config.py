@@ -7,10 +7,15 @@ the functions defined here return text rather than writing it — the ``init``
 command in :mod:`molmcp.cli` is what puts it on disk.
 
 Where the file lands, and every other file ``molmcp init`` writes, is owned
-by :mod:`molmcp.host`. The eight names imported from there below are
-re-exported as the very same objects, never copies, so callers importing them
-from here still work while the one host path table stays in
-``molmcp.host.layout``.
+by :mod:`molmcp.host`. The five names imported from there below are the ones
+this module's own signatures need, re-exported as the very same objects and
+never copies, so the one host path table stays in ``molmcp.host.layout``.
+
+The primitives that *write* those destinations — ``install_skill`` and its
+siblings — are deliberately absent. They have a single importable home,
+:mod:`molmcp.host`; a second spelling here would be a second name to keep in
+step with it, and the file that copies the usage constitution should have one
+caller-visible source.
 """
 
 from __future__ import annotations
@@ -21,10 +26,11 @@ import shutil
 import sys
 from dataclasses import dataclass
 
-# Re-exported, not used here: ``client_config.Path`` is the attribute the
+# Re-exported, not used here: nothing in this module resolves a path, since
+# home is joined in ``molmcp.host``. The name stays because it is what the
 # test suite patches to move ``Path.home()`` off the developer's real home,
-# and it must stay the one ``pathlib.Path`` object that ``molmcp.host``
-# resolves its layout tuples against — so the patch reaches both modules.
+# and it is the very ``pathlib.Path`` class that ``molmcp.host`` joins its
+# layout tuples against — so patching it here redirects the writer too.
 from pathlib import Path as Path
 from typing import Any
 
@@ -32,11 +38,8 @@ from .host import (
     HOSTS,
     SKILL_NAME,
     Host,
-    default_skill_dir,
     default_write_path,
-    install_skill,
     layout_for,
-    skill_template,
 )
 from .planes import (
     CORE_PLANE_ID,
@@ -220,13 +223,10 @@ __all__ = [
     "PlaneToggle",
     "SKILL_NAME",
     "default_plane_ids",
-    "default_skill_dir",
     "default_write_path",
-    "install_skill",
     "layout_for",
     "render_init",
     "render_mcp_json",
     "resolve_plane_toggles",
     "serve_argv",
-    "skill_template",
 ]

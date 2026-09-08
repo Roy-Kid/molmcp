@@ -1,0 +1,310 @@
+# Harness catalog
+
+Two different things in MolCrafts are shipped by two different mechanisms, and
+the whole point of this page is that they do not touch.
+
+The first is **molmcp itself**: a Python distribution on PyPI that speaks the
+**Model Context Protocol** (MCP) — the wire protocol an AI client such as
+Claude Code or Cursor uses to call tools on a server. Its unit of shipping is a
+release. Its registry is a **Python entry point**: a line in a package's
+`pyproject.toml` that says "when something looks for the `molmcp.providers`
+group, hand it this class." That is how a *provider* — one product's MCP
+surface, served as its own *plane* (`molvis`, `molq`, `molexp`) — becomes
+visible to `molmcp serve`. [Providers](providers.md) covers that path.
+
+The second is a **harness**: the pile of agent tooling a person or a team
+actually works with — instruction files, agent definitions, rules, and
+occasionally a plane or a knowledge overlay of their own. A harness is not a
+release. It changes several times a week, it belongs to whoever wrote it, and
+the interesting question about it is never "which version" but "which exact
+commit was I running when that went well?"
+
+That question is what this page answers.
+
+## Identity is a Git SHA
+
+A **Git SHA** is the 40-character lowercase hexadecimal fingerprint Git gives
+every commit — `9f1c3b2a7d4e0165c8a9b3d27e5f10486c73ab92`. It is computed from
+the commit's content, so it names exactly one tree of files and can never be
+made to name a different one. Branch names and tags can: `main` meant something
+else last Tuesday, and a tag can be moved.
+
+A harness is therefore identified by a SHA and by nothing else. There is no
+harness version number, no `latest`, and no semantic-versioning range. The
+loader enforces this: `molmcp.components.SHA_PATTERN` is `^[0-9a-f]{40}$`, and
+`HarnessCatalog` refuses to be constructed with an abbreviated SHA, an
+uppercase one, or a branch name.
+
+The SHA is **not written in the catalog file**. It is passed in by the caller
+that already knows which commit it unpacked:
+
+```python
+load_harness_catalog(tree_root, sha, supported_capabilities)
+```
+
+A file that stated its own SHA could disagree with the tree it sits in — a copy
+edited by hand, a rebase, a bad merge — and there would be no way to tell which
+of the two was lying. Keeping identity outside the file makes that
+disagreement unrepresentable.
+
+Which SHA an install is running is recorded in an **activation pointer**: a
+small JSON file beside the harness store under `cacheDir`, naming three SHAs —
+`current` (in effect), `staged` (accepted, waiting), and `previous` (what a
+rollback would restore). `molmcp.components.Activation` is the only thing that
+moves it, and serving only ever *reads* it.
+
+## `official`, `gate`, `canary` are labels on a SHA
+
+Once identity is a SHA, everything else people want to say about a harness is a
+note kept beside one:
+
+| Label | What it asserts about that SHA |
+|-------|--------------------------------|
+| `official` | The commit MolCrafts publishes as the default. It is the one the required pull-request check passed on. |
+| `gate` | A commit currently under evaluation — accepted for staging, not yet promoted to `current` anywhere but the machine testing it. |
+| `canary` | A commit a small number of installs run ahead of everyone else, on purpose, to find out what it breaks. |
+
+Three properties of these words matter more than their definitions.
+
+**They are not settings.** `molmcp config set …` has no key for them, and it is
+not going to get one. A setting would let two installs disagree about which SHA
+is `official` while both believe they are correct; the label belongs to the
+commit, not to the reader.
+
+**They are not environment variables.** molmcp reads no `MOLMCP_*` variable for
+anything, and `tests/test_no_env_switches.py` fails the build if a module
+starts reading one. Configuration that lives in a single shell cannot be
+reported by `molmcp config list`, and two plane servers launched by two clients
+would silently disagree about it.
+
+**They are not keys in the catalog file.** The grammar in
+`molmcp.components.catalog` rejects any key it does not recognise, so adding
+`label = "official"` to `harness.toml` does not add a label — it stops the file
+loading. A label is metadata *about* a commit and a catalog is the contents
+*of* one; the loader never sees the label at all.
+
+No module in `src/` looks any of these three up. They exist so that humans and
+CI jobs describing the same commit reach for the same word. (`molmcp gate`,
+which checks that this repository's required pull-request check is still wired
+the same way in all three places that call it, is unrelated: it validates
+molmcp's own CI wiring and knows nothing about harness commits. The label
+`official` is named after that check because the check is what earns it.)
+
+## Two registries, and they are disjoint
+
+This is the sentence most likely to be undone by a well-meaning future change,
+so here it is with its reasons.
+
+| | MCP planes | Harness plugins |
+|---|---|---|
+| Authoritative list | the `molmcp.providers` entry-point group | one commit's `harness.toml` |
+| Unit | an installed Python distribution | a Git SHA |
+| Changes when | somebody releases to PyPI | somebody pushes a commit |
+| Discovered by | `importlib.metadata` entry points | reading the activated commit's tree |
+
+Concretely: none of the following three exists today, and none of them may be
+added later without abandoning the split above.
+
+- **There is no `harness` plane id.** Plane ids are product names (`molcrafts`,
+  `molvis`, `molq`, `molexp`). "Harness" is a distribution mechanism, not a
+  product with tools.
+- **There is no `molmcp serve harness`.** `molmcp serve` starts the composed
+  stack; `molmcp serve <plane>` starts one plane for debugging. Neither takes
+  `harness`, because there is nothing to serve under that name.
+- **There is no `molmcp.providers` entry point for a harness.** A harness is
+  not installed with pip, so it has no `pyproject.toml` for molmcp to read, so
+  there is nothing for an entry point to point at.
+
+A harness *may* contribute a plane — that is what a `provider` component is —
+but the plane is named by the component's own `name`, and it is mounted for
+this process out of the activated tree. It never becomes an entry point, and
+the catalog id (`provider.bench`) is not the plane id (`bench`); mounting under
+the id would namespace its tools as `provider.bench_open`.
+
+The reason to keep the two lists apart is that they fail differently. An
+entry-point plane that breaks was shipped to everyone by a release you can
+yank. A harness plane that breaks was a commit one person pushed an hour ago,
+and the fix is to move a pointer back. Merging the registries would mean one
+recovery procedure for two unrelated failures.
+
+## What a catalog file says
+
+A **catalog** is the inventory of one commit: the list of pieces that commit
+offers. The tree is never globbed — a file nobody declared in the catalog is
+not a component, which is what keeps a stray editor backup out of an agent's
+instruction set.
+
+A catalog holds two kinds of row, and confusingly both are written as
+`[[component]]`. The first kind is a component.
+
+A **component** is one installable piece. There are five kinds of component,
+and each one reserves a directory:
+
+| `kind` | What it is | `path` must start with | `entrypoint` |
+|--------|------------|------------------------|--------------|
+| `skill` | Instruction file an agent reads | `skills/` | must be absent |
+| `agent` | Definition of one specialised worker | `agents/` | must be absent |
+| `rule` | A constraint that holds across tasks | `rules/` | must be absent |
+| `provider` | An MCP plane this commit contributes | `providers/` | **required** |
+| `overlay` | Domain knowledge layered onto the code graph | `overlays/` | **required** |
+
+An **entrypoint** is a `module:object` string such as
+`bench_provider:BenchProvider`. The loader stores it and never imports it —
+reading a catalog must not be able to run someone's code.
+
+The second kind of row is a bundle. A **bundle** is a named group of component
+ids, written as a row whose `kind` is the literal string `"bundle"` — which is
+why `ComponentKind("bundle")` raises. It is not a sixth component kind, and a
+bundle may not contain another bundle. Every catalog must define both `daily`
+and `dev`; a catalog missing either is refused, because a host that asks for
+`daily` and silently gets nothing looks configured and is not.
+
+The keys, in full — there are no others, and an unknown one is an error rather
+than an ignored line:
+
+| Where | Keys |
+|-------|------|
+| top level | `requires` |
+| a component row | `kind`, `name`, `path`, `entrypoint` |
+| a bundle row | `kind`, `name`, `members`, `requires` |
+| derived, never written | `id` — always `"<kind>.<name>"` |
+
+`requires` lists **capability tokens**: machinery a piece needs from whatever
+process loads it. Two exist today, `provider-sdk` and `harness-catalog`. They
+are checked twice, and the two checks are not the same thing. The *language
+gate* asks whether the token is even spellable (`ALLOWED_REQUIRES`); an unknown
+token is a malformed file. *Eligibility* asks whether this particular process
+can honour a spellable token; a token this build does not implement is a
+refusal to load, not a malformed file. Keeping them apart is what lets a future
+token be added to the grammar without every existing install claiming to
+support it.
+
+## The example file and the file that is read
+
+This repository publishes exactly one catalog, and it is not a live one:
+
+| | Published here | Read at run time |
+|---|---|---|
+| Name | `harness.example.toml` | `harness.toml` |
+| Location | `docs/concepts/` | the root of one published commit tree, under `cacheDir` |
+| Who reads it | a person, and one test | `Activation.stage` and `create_stack` |
+
+[`harness.example.toml`](harness.example.toml) is documentation. It is under
+`docs/` and never at the repository root, and `tests/test_harness_catalog_fixture.py`
+loads it through the real `molmcp.components.load_harness_catalog` so that the
+example cannot quietly drift away from the grammar it is illustrating.
+
+**`harness.toml` is never auto-loaded from the working directory.** The
+filename is joined onto a root the caller passes —
+`Path(root) / "harness.toml"` in `molmcp/components/catalog.py`, the one place
+in `src/` where that name is resolved at all. The only root molmcp itself ever
+passes is the tree of the commit the activation pointer names. `molmcp serve`
+does not look beside itself for a catalog, and neither does `molmcp init`;
+`molmcp init <host> --source PATH` takes the checkout as an explicit argument
+and probes for nothing.
+
+This is the same rule the rest of molmcp follows for `molcrafts.json` and for
+the workspace source: a tool that picks up whatever file happens to be next to
+the directory you started it in behaves differently for two people running the
+same command.
+
+## Where a harness comes from
+
+The repository to fetch from is named by three settings, and it is either all
+three or none of them:
+
+```bash
+molmcp config set harness.owner MolCrafts
+molmcp config set harness.repo harness
+molmcp config set harness.ref main
+```
+
+`ref` is the branch or tag a commit is *resolved from*. It is not the commit
+being served — that one is in the activation pointer. A partial locator is a
+configuration error naming the missing keys, rather than a guess: filling in a
+default would mean fetching code from a repository nobody asked for.
+
+With no locator set at all, molmcp serves exactly as it did before any of this
+existed. An install with no harness is not a degraded install.
+
+## Two repositories, and the older one is leaving
+
+`MolCrafts/molcrafts-harness` is the **plugin marketplace** MolCrafts used
+before this design — a "marketplace" being a repository an agent host is told
+about once, from which it then installs plugins by name. It is on its way out.
+Nothing in this documentation set offers its URL as a current install address,
+and nothing should: an install line for a repository that is being retired is a
+promise the maintainers are about to break.
+
+`MolCrafts/harness` is its replacement in role only. **It is a new, empty
+repository — not `molcrafts-harness` renamed.** That distinction is the whole
+decision, so it is worth being blunt about why a rename was rejected:
+
+- A rename carries the old history, and with it the old marketplace layout, the
+  old plugin manifests, and every stale install instruction anyone ever wrote
+  down. The new repository's contract is a `harness.toml` at the root of every
+  commit. Starting from an empty tree makes the first commit that satisfies
+  that contract also the first commit that exists.
+- A rename leaves a redirect. GitHub forwards the old path, so a host still
+  configured against `molcrafts-harness` keeps working and nobody finds out
+  they are on the old address until the redirect is removed.
+- A rename carries the old licence into the new repository by default, which is
+  a licensing decision made by accident. See the table below.
+
+The new repository holds **agent tooling only**: skills, agents, rules, and the
+occasional provider or overlay. It is not a monorepo. molq, molexp, molvis and
+molpy stay in their own repositories, and moving one into the harness would
+make a commit of the harness mean "some agent instructions changed *and* a
+science package changed", which is exactly the coupling the SHA-identity model
+exists to avoid.
+
+The old repository is retired only **after** cutover, and retiring it is a
+deliberate, separately authorised act. The runbook is
+[Retiring the old harness marketplace](../guides/harness-migration.md).
+
+## Licences
+
+Three repositories, three separate grants. This table describes them; it does
+not change any of them.
+
+| Repository | Licence | What this page may change |
+|------------|---------|---------------------------|
+| `MolCrafts/molmcp` — this repository | **BSD-3-Clause**, in [`LICENSE`](https://github.com/MolCrafts/molmcp/blob/master/LICENSE) at the repository root | Nothing. That file is the grant; this row is a description of it. molmcp is not being relicensed. |
+| `MolCrafts/molcrafts-harness` — the old marketplace | MIT | Nothing. It keeps the grant it shipped under for as long as it exists. |
+| `MolCrafts/harness` — the new catalog repository | Not yet granted; it does not exist yet | Nothing. Its licence is chosen when the repository first exists. |
+
+Two things follow that are easy to get wrong.
+
+**A licence is granted once, in the repository it applies to.** Copying
+BSD-3-Clause text into `MolCrafts/harness` because molmcp uses it would be a
+licensing decision taken as a formatting step. If the new repository ends up
+BSD-3-Clause, that must be because someone chose it.
+
+**A harness commit is not molmcp.** A user's own harness carries whatever
+licence its author chose, or none. molmcp loads it; molmcp does not
+sub-license it, and nothing in the catalog format asserts anything about the
+rights in the tree it describes.
+
+## Two shapes that were considered and refused
+
+**A `WikiSkill` as an `init` channel.** `molmcp init <host>` installs one
+managed instruction file — the usage skill in `src/molmcp/skill/SKILL.md` — and
+one MCP entry. A proposal to add a second, wiki-shaped skill installed the same
+way was rejected. A skill that wraps `packages`, `molvis_open`, `molq_*` or
+`molexp_*` in prose is a second copy of the truth about those tools: upstream
+renames a tool and the wiki keeps confidently describing the old one. The same
+objection retires the chain-of-thought wrapper variant, where the skill narrates
+reasoning steps around a call the client can already make directly.
+`molmcp init` has exactly one skill channel, and the catalog's `skill`
+components are materialised from a checkout, not installed as a second managed
+file.
+
+**A harness plane.** Rehearsed above: no plane id, no `molmcp serve harness`,
+no entry point. A harness is where tools come from, not a tool.
+
+## Read next
+
+- [Retiring the old harness marketplace](../guides/harness-migration.md) — the exit runbook
+- [Providers](providers.md) — the other registry, the entry-point one
+- [Provider design](provider-design.md) — what earns a tool slot on any plane
+- [Installation](../get-started/installation.md#settings) — where `harness.owner` / `repo` / `ref` live

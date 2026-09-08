@@ -62,6 +62,23 @@ agents stay out of MCP.
 | **First-party** (molq, molexp, …) | `src/molmcp/providers/<name>/` + entry point `molmcp.providers.<name>`. Upstream package is a **lazy optional** import. Zero FastMCP in the science package. |
 | **Third-party** | Sibling package or package `mcp` extra — see [Write a Provider](../guides/write-a-provider.md). |
 
+A plane contributed by an activated harness commit comes from neither row: its
+registry is a Git SHA, never a `molmcp.providers` entry point, and there is no
+plane called `harness` — see [Harness catalog](harness.md).
+
+**Catalog membership *is* the entry-point group.** `list_planes` and
+`known_plane_ids` name exactly what `discover_providers` reported and nothing
+else — there is no second list of official names inside `planes.py`. A plane
+appears because something registered it on `molmcp.providers`, so every id a
+catalog offers is one `molmcp serve` can actually start. `planes.py` still owns
+the `purpose` / `when_to_connect` copy for the planes molmcp ships, but that
+table is looked up *for* a discovered name, never consulted to produce one; an
+unlisted name falls back to a generic sentence, and `tools_hint` is read off
+the discovered instance itself. Being in the group settles membership only —
+it does not make a plane first-party. In-tree placement
+(`src/molmcp/providers/<name>/`) still decides that, and the four conditions
+above still decide whether any given tool earns a slot.
+
 ## The shape every provider has
 
 A provider subclasses `ProviderBase` and declares each tool as a **method**

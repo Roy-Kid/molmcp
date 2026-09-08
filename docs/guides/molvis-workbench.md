@@ -75,6 +75,8 @@ The full aspirin rehearsal — start the server, open, build, look, click, poll,
 
 The reason is honesty about what the thing is. An interactive dialogue script that needs a person to click a benzene ring is neither a runnable product example nor a CI test, and filing it as one advertises a guarantee no maintainer can keep. In-tree tests pin the workbench mechanics only: session lifecycle, namespace persistence, journal ordering under concurrent writes, and one round trip against real molvis over its in-process transport, no browser involved.
 
+**One word, two meanings.** The `molvis-agent-e2e/` playbook is a *test* harness in the ordinary English sense — a rig you drive a system with — and it is **not** the Git SHA plugin catalog documented in [Harness catalog](../concepts/harness.md). That other harness is a repository of agent tooling (skills, agents, rules, occasionally a plane) pinned by commit; this one is a directory of dialogue scripts, has no `harness.toml`, is registered nowhere, and is never activated by molmcp. Nothing in this section is an instruction to put the playbook in a harness commit.
+
 ## Read next
 
 - **[Provider design](../concepts/provider-design.md)** — the primitives, the no-invented-API rule, and the local trust model

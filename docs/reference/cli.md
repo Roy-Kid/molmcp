@@ -26,7 +26,7 @@ molmcp serve molq
 
 | Argument / flag | Meaning |
 |-----------------|---------|
-| `plane` | Optional. Omit for the composed stack. `molcrafts` or a provider name for a focused process. `catalog` is not a plane. |
+| `plane` | Optional. Omit for the composed stack. `molcrafts` or a provider name for a focused process. `catalog` is not a plane, and neither is `harness` — see [Harness catalog](../concepts/harness.md). |
 | `--disable PLANE` | Omit a provider mount (emitted by `molmcp init --disable`). |
 | `--config PATH` | Explicit `molcrafts.json`. Not searched for in the working directory — scope comes from settings; see [`molmcp config`](#molmcp-config). |
 | `--env LOCATOR` | Python env to discover packages from (venv root, interpreter, or site-packages). Overrides the `pythonEnv` setting. |

@@ -23,7 +23,10 @@ handshake-era clients.
 ```
 
 There is **no** parent server that mounts every provider under `molmcp`, and
-**no catalog plane** — routing lives on molcrafts.
+**no catalog plane** — routing lives on molcrafts. There is no **harness**
+plane either: a harness is a Git SHA of agent tooling, a separate registry from
+the `molmcp.providers` entry points that define planes — see
+[Harness catalog](harness.md).
 
 ## Responsibilities
 
@@ -66,4 +69,5 @@ mirror.
 
 - [Provider design](provider-design.md)
 - [Discovery engine](discovery.md)
+- [Harness catalog](harness.md)
 - [MolVis workbench](../guides/molvis-workbench.md)

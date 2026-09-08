@@ -33,7 +33,6 @@ from .install import (
     materialize_daily,
     materialize_dev_index,
     resolve_bundle_source,
-    skill_template,
     write_adapter,
 )
 from .layout import (
@@ -60,6 +59,5 @@ __all__ = [
     "materialize_daily",
     "materialize_dev_index",
     "resolve_bundle_source",
-    "skill_template",
     "write_adapter",
 ]

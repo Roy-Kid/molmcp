@@ -247,3 +247,29 @@ class TestSettingsHarness:
             st.load_settings(tmp_path / "repo")
 
         assert "shareReceipts" in str(excinfo.value)
+
+
+class TestNestedSchemaFirstParty:
+    """First-party planes are named settings, not a generic ``providers`` bag.
+
+    ``molq`` and ``molexp`` each configure one plane, and each knows which
+    members it reads. A single ``providers`` dict keyed by plane name would
+    accept any key for any plane: `config set providers.molq.allowsubmit`
+    would be stored, echoed by `config list`, and read by nothing. The plane
+    catalog's membership moved to the entry-point group (spec 14); the
+    settings surface deliberately did not follow it.
+    """
+
+    def test_molq_and_molexp_are_dict_valued_first_party_settings(self):
+        assert st._SCHEMA.get("molq") is dict
+        assert st._SCHEMA.get("molexp") is dict
+
+    def test_there_is_no_generic_providers_bag(self):
+        assert "providers" not in st._SCHEMA
+        assert "providers" not in st._NESTED_SCHEMA
+
+    def test_molq_members_are_exactly_database_and_allow_submit(self):
+        assert st._NESTED_SCHEMA["molq"] == frozenset({"database", "allowSubmit"})
+
+    def test_molexp_members_are_exactly_workspace(self):
+        assert st._NESTED_SCHEMA["molexp"] == frozenset({"workspace"})

@@ -139,4 +139,5 @@ was.
 
 - **[Quickstart](quickstart.md)** — `molmcp serve` and `molmcp init`
 - **[Architecture](../concepts/architecture.md)** — FastMCP composition
+- **[Harness catalog](../concepts/harness.md)** — the `harness.owner` / `harness.repo` / `harness.ref` settings, and why a harness is a Git SHA rather than a plane
 - **[Deploy](deploy.md)** — local stdio for Claude Code

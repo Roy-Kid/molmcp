@@ -16,6 +16,7 @@ from typing import Literal
 
 import pytest
 
+import molmcp.skill
 from molmcp.host.install import (
     ADAPTER_TEXT,
     activate_dev,
@@ -23,7 +24,6 @@ from molmcp.host.install import (
     materialize_daily,
     materialize_dev_index,
     resolve_bundle_source,
-    skill_template,
     write_adapter,
 )
 
@@ -43,6 +43,10 @@ MANAGED_BODY = "MANAGED-BY-INSTALL-SKILL"
 INSTALL_SOURCE = (
     Path(__file__).resolve().parents[2] / "src" / "molmcp" / "host" / "install.py"
 )
+
+#: The packaged usage constitution ``install_skill`` copies, named the way the
+#: production lookup names it: the file beside ``molmcp/skill/__init__.py``.
+PACKAGED_SKILL = Path(molmcp.skill.__file__).resolve().parent / "SKILL.md"
 
 
 @pytest.fixture
@@ -126,11 +130,12 @@ class TestResolveBundleSource:
 class TestInstallSkill:
     """Writes the usage constitution and nothing else."""
 
-    def test_the_written_text_is_the_packaged_template(self, home: Path) -> None:
+    def test_the_written_file_is_a_copy_of_the_packaged_one(self, home: Path) -> None:
         install_skill("grok")
 
         skill = home / ".grok" / "skills" / "molcrafts" / "SKILL.md"
-        assert skill.read_text(encoding="utf-8") == skill_template()
+        assert skill.read_bytes() == PACKAGED_SKILL.read_bytes()
+        assert skill != PACKAGED_SKILL
 
     def test_the_template_carries_the_packaged_marker(self, home: Path) -> None:
         install_skill("grok")

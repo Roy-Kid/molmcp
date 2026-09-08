@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import pytest
 
 from molmcp import client_config
 from molmcp import host as host_package
+from molmcp import skill as skill_package
 from molmcp.client_config import (
     render_init,
     render_mcp_json,
@@ -143,19 +145,6 @@ class TestOneJsonForEveryHost:
 
         assert "mcpServers" in json.loads(text)
 
-    def test_each_host_has_a_skill_directory(self):
-        for host in ("grok", "claude", "cursor", "codex"):
-            assert client_config.default_skill_dir(host).name == "molcrafts"
-
-
-def test_skill_template_is_shipped():
-    text = client_config.skill_template()
-    assert "packages" in text
-    assert "SYMBOL_NOT_FOUND" in text
-    assert "disable-model-invocation: false" in text
-    assert "user-invocable: false" in text
-    assert "when-to-use:" in text
-
 
 #: Production modules this file reads as text, so a deleted table stays deleted.
 _SRC = Path(__file__).resolve().parents[1] / "src" / "molmcp"
@@ -169,9 +158,15 @@ RE_EXPORTED_NAMES: tuple[str, ...] = (
     "HOSTS",
     "layout_for",
     "default_write_path",
-    "default_skill_dir",
+)
+
+#: Names ``client_config`` re-exported while the host package was being split
+#: out, and no longer does. They have one importable home, ``molmcp.host``:
+#: reaching them through this module must fail rather than quietly work.
+WITHDRAWN_NAMES: tuple[str, ...] = (
     "install_skill",
     "skill_template",
+    "default_skill_dir",
 )
 
 #: Every host ``molmcp init`` wires, in the order ``--help`` prints them.
@@ -269,6 +264,11 @@ class TestHostTableLivesOnlyInTheHostPackage:
     @pytest.mark.parametrize("name", RE_EXPORTED_NAMES)
     def test_the_re_export_is_the_same_object_not_a_wrapper(self, name: str) -> None:
         assert getattr(client_config, name) is getattr(host_package, name)
+
+    @pytest.mark.parametrize("name", WITHDRAWN_NAMES)
+    def test_a_withdrawn_name_is_neither_attribute_nor_export(self, name: str) -> None:
+        assert not hasattr(client_config, name)
+        assert name not in client_config.__all__
 
     def test_an_unknown_host_names_the_known_hosts_in_sorted_order(self) -> None:
         with pytest.raises(ValueError) as excinfo:
@@ -382,3 +382,142 @@ class TestInitComposesTheHostPrimitives:
 
         assert code != 0
         assert str(not_a_checkout) in capsys.readouterr().err
+
+
+#: The shipped usage constitution, read straight from the package it lives in.
+#: The host package exposes no accessor for it — ``skill_template`` is in
+#: :data:`WITHDRAWN_NAMES` above — and ``install_skill`` copies this very file.
+SKILL_FILE = Path(skill_package.__file__).parent / "SKILL.md"
+
+#: The only install line that buys back a missing core. Frozen: nothing else
+#: restores ``packages`` / ``open`` / ``route``.
+CORE_INSTALL = "pip install molcrafts-molmcp"
+
+#: Plane -> the distribution its namespace needs, frozen by the provider
+#: cutover. ``molexp`` publishes under its own name; the other two are
+#: prefixed. A reader who follows one of these must land on a real project.
+SCIENCE_PACKAGES: tuple[tuple[str, str], ...] = (
+    ("molvis", "molcrafts-molvis"),
+    ("molq", "molcrafts-molq"),
+    ("molexp", "molexp"),
+)
+
+#: A call the skill must never teach a model to make. ``require_upstream`` is
+#: provider-internal, is reachable through no MCP tool, and recovers nothing.
+FORBIDDEN_SKILL_CALL = "require_upstream"
+
+#: ``<something>-mcp`` distribution names. None are published, so naming one
+#: turns the recovery into a ``pip install`` that can only fail.
+MCP_SUFFIXED_PACKAGE = re.compile(r"[\w-]+-mcp\b")
+
+#: Any pip line at all, used to prove where install advice is allowed to live.
+PIP_INSTALL = re.compile(r"pip install ")
+
+
+def _skill_text() -> str:
+    """The packaged ``SKILL.md``, as the agent that loads the skill reads it."""
+    return SKILL_FILE.read_text(encoding="utf-8")
+
+
+def _sections(text: str, marker: str) -> dict[str, str]:
+    """Body of every *marker*-level markdown heading, keyed by its title.
+
+    A deeper heading stays inside its parent's body, so splitting on ``##``
+    hands back whole sections and splitting one of those on ``###`` hands
+    back that section's numbered paths.
+    """
+    prefix = f"{marker} "
+    found: dict[str, str] = {}
+    title = ""
+    body: list[str] = []
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            if title:
+                found[title] = "\n".join(body)
+            title, body = line[len(prefix) :].strip(), []
+        elif title:
+            body.append(line)
+    if title:
+        found[title] = "\n".join(body)
+    return found
+
+
+def _recovery_paths() -> tuple[str, ...]:
+    """The numbered paths of the one section that recovers a missing tool."""
+    text = _skill_text()
+    owning = [body for body in _sections(text, "##").values() if CORE_INSTALL in body]
+    assert len(owning) == 1, "the core install line must have exactly one home"
+    return tuple(_sections(owning[0], "###").values())
+
+
+class TestSkillOffersTwoRecoveriesAndNoThird:
+    """A missing tool has two causes, and the skill separates their fixes.
+
+    The core being absent and a namespaced plane being absent look the same
+    to a model and need opposite answers, so the constitution splits them.
+    Both fixes end in a ``pip install``; each name below is pinned because a
+    wrong one sends the user to a project that does not exist.
+    """
+
+    def test_the_recovery_section_splits_into_exactly_two_paths(self) -> None:
+        assert len(_recovery_paths()) == 2
+
+    def test_the_first_path_installs_the_core(self) -> None:
+        first, _second = _recovery_paths()
+
+        assert CORE_INSTALL in first
+
+    def test_the_second_path_never_installs_the_core_again(self) -> None:
+        _first, second = _recovery_paths()
+
+        assert CORE_INSTALL not in second
+
+    def test_the_second_path_reopens_a_disabled_plane_before_installing(
+        self,
+    ) -> None:
+        _first, second = _recovery_paths()
+
+        installs = [match.start() for match in PIP_INSTALL.finditer(second)]
+
+        assert "--disable" in second
+        assert installs != []
+        assert second.index("--disable") < min(installs)
+
+    @pytest.mark.parametrize(("plane", "package"), SCIENCE_PACKAGES)
+    def test_a_plane_names_its_frozen_science_package(
+        self, plane: str, package: str
+    ) -> None:
+        _first, second = _recovery_paths()
+        exact = re.compile(rf"install\s+{re.escape(package)}(?![\w-])")
+
+        rows = [
+            line for line in second.splitlines() if plane in line and exact.search(line)
+        ]
+
+        assert len(rows) == 1
+
+    def test_the_skill_never_tells_a_model_to_call_require_upstream(self) -> None:
+        assert FORBIDDEN_SKILL_CALL not in _skill_text()
+
+    def test_no_recovery_names_an_unpublished_mcp_suffixed_package(self) -> None:
+        assert MCP_SUFFIXED_PACKAGE.findall(_skill_text()) == []
+
+    def test_every_install_line_lives_inside_a_recovery_path(self) -> None:
+        whole = len(PIP_INSTALL.findall(_skill_text()))
+        inside = sum(len(PIP_INSTALL.findall(path)) for path in _recovery_paths())
+
+        assert whole > 0
+        assert inside == whole
+
+
+class TestTheInstalledSkillIsThePinnedFile:
+    """``molmcp init`` hands the agent the file the pins above are read from."""
+
+    def test_init_copies_the_constitution_byte_for_byte(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        written = host_package.install_skill("grok")
+
+        assert written.read_text(encoding="utf-8") == _skill_text()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -717,3 +718,39 @@ async def test_core_lifespan_closes_the_collection_and_never_closes_a_worker(
     assert collection.closes == 1
     assert wiring.workers != []
     assert not hasattr(WorkerProvider, "close")
+
+
+# -- frozen keyword surface (spec 14) ---------------------------------------
+
+
+class TestCreateStackSignature:
+    """``create_stack``'s keyword surface is a published contract.
+
+    Every host adapter, the CLI, and every embedder calls this by keyword.
+    A parameter renamed, reordered into a positional slot, or quietly added
+    breaks callers this repository cannot see, so the tuple is pinned rather
+    than described. ``create_plane`` grew ``extras``; ``create_stack`` did
+    not, and this is where that stays true.
+    """
+
+    #: Exactly today's parameters, in today's order.
+    PARAMETERS = (
+        "collection",
+        "config",
+        "providers",
+        "disable",
+        "discover_entry_points",
+        "enable_path_safety",
+        "enable_response_limit",
+        "response_limit_bytes",
+        "validate_annotations",
+        "instructions",
+    )
+
+    def test_the_parameter_names_are_exactly_the_frozen_tuple(self):
+        assert tuple(inspect.signature(create_stack).parameters) == self.PARAMETERS
+
+    def test_every_parameter_is_keyword_only(self):
+        parameters = inspect.signature(create_stack).parameters
+        kinds = {name: p.kind for name, p in parameters.items()}
+        assert kinds == dict.fromkeys(self.PARAMETERS, inspect.Parameter.KEYWORD_ONLY)

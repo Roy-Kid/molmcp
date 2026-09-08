@@ -79,6 +79,11 @@ A provider reaches molmcp through the `molmcp.providers` entry-point group:
 molq = "molmcp.providers.molq:MolqProvider"
 ```
 
+This entry-point group is the authoritative list of planes, and it is a
+different registry from the harness catalog, which is identified by a Git SHA:
+there is no harness entry point and no `molmcp serve harness` — see
+[Harness catalog](harness.md).
+
 `molmcp serve molq` loads the entry point whose name matches the plane id and
 serves that provider alone. **Every provider is instantiated with `cls()`** —
 no arguments. Anything an operator must be able to change therefore belongs in

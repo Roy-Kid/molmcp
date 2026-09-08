@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .provider import discover_providers
+from .provider import Provider, discover_providers
 
 #: Always-on knowledge + routing connection. Not a disableable plane.
 CORE_PLANE_ID = "molcrafts"
@@ -158,86 +158,97 @@ def _molcrafts_info() -> PlaneInfo:
     )
 
 
-_PROVIDER_META: dict[str, tuple[str, str, tuple[str, ...]]] = {
+#: Product copy for the planes molmcp itself ships, keyed by plane id.
+#: **Not a membership table** — a key here is only ever looked up for a name
+#: :func:`discover_providers` already reported. Holding a row for a plane the
+#: entry-point group never registered must not put it in a catalog, because
+#: ``molmcp serve`` could not start it.
+_PROVIDER_COPY: dict[str, tuple[str, str]] = {
     "molvis": (
         "Live molvis viewer: persistent Python namespace + browser canvas.",
         "User wants to draw, load, select, or interact with a molecule in 3D.",
-        (
-            "open",
-            "exec",
-            "poll_events",
-            "list_sessions",
-            "capabilities",
-            "refresh",
-            "close",
-        ),
     ),
     "molq": (
         "molq job lifecycle: list/get/logs destinations; opt-in submit/cancel.",
         "User wants cluster jobs, queue status, or submission.",
-        ("list_jobs", "get_job", "job_logs", "list_destinations", "list_queue"),
     ),
     "molexp": (
         "molexp workspace navigation, idempotent scaffold, and adoption of a "
         "legacy data directory (not a run driver).",
         "User works with experiment workspaces, projects, FAIR layout, or has "
         "a folder of results to lift into one.",
-        (
-            "list_projects",
-            "list_experiments",
-            "list_runs",
-            "workspace_layout",
-            "validate_workspace",
-            "materialize_workspace",
-            "add_project",
-            "add_experiment",
-            "create_run",
-            "validate_workflow",
-            "plan_adoption",
-            "run_adoption",
-            "adoption_status",
-            "ingest_metrics",
-        ),
     ),
 }
 
 
-def list_plane_infos(*, include_unavailable_providers: bool = False) -> list[PlaneInfo]:
-    """Return the core connection plus provider planes this install can serve.
+def _provider_copy(name: str) -> tuple[str, str]:
+    """Return the ``(purpose, when_to_connect)`` sentences for a member plane.
 
-    By default only providers whose optional upstream package is installed
-    appear (**silent omit** of missing science deps — not a test skip).
-    Pass ``include_unavailable_providers=True`` for diagnostics.
+    Args:
+        name: Plane id, as the entry-point group reported it.
+
+    Returns:
+        The catalog's own product copy when ``name`` has a row, otherwise a
+        generic pair naming the plane and the group it came from.
+    """
+    return _PROVIDER_COPY.get(
+        name,
+        (
+            f"Provider plane '{name}' (entry point molmcp.providers).",
+            f"When work needs the '{name}' product surface.",
+        ),
+    )
+
+
+def _tools_hint(provider: Provider) -> tuple[str, ...]:
+    """Return the tool names *provider* publishes about itself.
+
+    Duck-typed exactly like ``probe`` is in ``provider_available``: the
+    instance already answers this, so the catalog keeps no parallel tool
+    list that could drift away from what ``register`` actually attaches.
+
+    Args:
+        provider: A discovered provider instance.
+
+    Returns:
+        The wire names from ``provider.tool_specs()``, or an empty tuple
+        when the instance does not publish specs (the Protocol minimum).
+    """
+    specs_fn = getattr(provider, "tool_specs", None)
+    if not callable(specs_fn):
+        return ()
+    return tuple(spec.name for spec in specs_fn())
+
+
+def list_plane_infos(*, include_unavailable_providers: bool = False) -> list[PlaneInfo]:
+    """Return the core connection plus the provider planes the group reports.
+
+    Membership has exactly one authority: the ``molmcp.providers``
+    entry-point group, read through :func:`discover_providers`. By default
+    only providers whose optional upstream package is installed appear
+    (**silent omit** of missing science deps — not a test skip).
+
+    Args:
+        include_unavailable_providers: Widen discovery to providers whose
+            ``probe()`` is false, for diagnostics. It widens availability
+            only — a name the group never registered is still never listed.
+
+    Returns:
+        The core plane first, then one row per discovered provider, by id.
     """
     planes: list[PlaneInfo] = [_molcrafts_info()]
-    available = {p.name: p for p in discover_providers(only_available=True)}
-    if include_unavailable_providers:
-        loaded = {p.name: p for p in discover_providers(only_available=False)}
-        names = sorted(set(loaded) | set(_PROVIDER_META))
-        by_name = loaded
-    else:
-        names = sorted(available)
-        by_name = available
-    for name in names:
-        if name not in by_name and not include_unavailable_providers:
-            continue
-        purpose, when, tools = _PROVIDER_META.get(
-            name,
-            (
-                f"Provider plane '{name}' (entry point molmcp.providers).",
-                f"When work needs the '{name}' product surface.",
-                (),
-            ),
-        )
+    discovered = discover_providers(only_available=not include_unavailable_providers)
+    for provider in sorted(discovered, key=lambda member: member.name):
+        purpose, when = _provider_copy(provider.name)
         planes.append(
             PlaneInfo(
-                id=name,
+                id=provider.name,
                 kind="provider",
                 purpose=purpose,
                 when_to_connect=when,
-                serve_command=f"molmcp serve {name}",
+                serve_command=f"molmcp serve {provider.name}",
                 requires_config=False,
-                tools_hint=tools,
+                tools_hint=_tools_hint(provider),
                 disableable=True,
             )
         )
@@ -252,9 +263,7 @@ def known_plane_ids(*, only_available: bool = False) -> frozenset[str]:
     ``register``). Catalogs use *only_available*.
     """
     provider_names = {p.name for p in discover_providers(only_available=only_available)}
-    if only_available:
-        return frozenset(BUILTIN_PLANE_IDS | provider_names)
-    return frozenset(BUILTIN_PLANE_IDS | provider_names | set(_PROVIDER_META))
+    return frozenset(BUILTIN_PLANE_IDS | provider_names)
 
 
 def route_task(task: str) -> dict[str, Any]:
