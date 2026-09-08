@@ -223,3 +223,32 @@ Same placement rule as `providers/molexp/`. Contract:
   突变测试）中允许；裸 `# type: ignore` 不允许。**
 - **MCP payload 契约测试钉序列化字面量**（如 `"resolved"`），不引用枚举成员——
   测的是 wire format。
+
+<!-- mol:note:topic:faked-seam-hides-broken-reader -->
+## [2026-09-08] 缝把函数假掉时，至少要一条测试驱动真函数
+
+`harness-evo-01-sources` 期间，`Settings.harness` 从 dict 改成 tuple 后
+`server._harness_locator()` 对**每一个**安装都抛 `AttributeError`，`molmcp serve`
+已断——而全量套件 1852 条全绿。原因：`tests/test_stack.py` 通过 `_wire` 缝注入
+一个假的 locator，`grep -rn "_harness_locator" tests/` 唯一的命中是一个**测试
+名字**，没有任何测试调用过真函数。缝越好用，越没人调用真货。
+
+**Rule**：为某个函数造了测试缝之后，必须同时留至少一条不走缝、直接调用真函数的
+测试。缝证明的是调用方编排正确，不是被缝掉的那个函数还能跑。
+
+<!-- mol:note:topic:schema-type-flip-unlocks-writes -->
+## [2026-09-08] 翻转 `_SCHEMA` 类型会静默解锁旧类型正在拒绝的写路径
+
+`settings._SCHEMA["harness"]` 从 `dict` 改成 `list` 的瞬间，两条 CLI 写路径失去
+保护：`_parse` 的 `expected is dict` 分支（抛 "set a member instead"）不再命中，
+改走 `expected is list` 返回 `[value]`；`add_value` 的 `_SCHEMA.get(top) is not
+list` 守卫不再触发，直接 append 裸字符串。两者都在 `write_settings_file` 之前
+**无任何校验**。而 `_reject_unknown` 位于 `load_settings` 之下，于是下一条命令起
+`config list/get/set/add/remove` 与 `serve` 全部 exit 2，**没有任何 CLI 能救回**，
+只能手改 JSON。
+
+**Rule**：改 `_SCHEMA` 里某个键的类型时，先列出 `_parse` / `set_value` /
+`add_value` / `remove_value` / `_resolve` 中按**旧类型**分支的每一处，逐条确认新
+类型下谁还在拒绝、谁开始放行。类型不只是校验规则，它同时是这些动词的调度键。
+配套：元素是对象的 list 用 `_OBJECT_LISTS` 声明，两个字符串动词读表拒绝，
+不在函数体里写死键名。

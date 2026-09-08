@@ -59,15 +59,6 @@ _COMPONENT_MODULES = (
 _HARNESS_NAMES = ("HarnessSource", "harness_source")
 
 
-@pytest.fixture
-def home(tmp_path, monkeypatch):
-    """A ``tmp_path``-rooted ``Path.home``, so no developer's ``~`` is read."""
-    fake = tmp_path / "home"
-    fake.mkdir()
-    monkeypatch.setattr(st.Path, "home", staticmethod(lambda: fake))
-    return fake
-
-
 def test_an_empty_settings_tree_names_no_harness_source(home: Path, tmp_path: Path):
     """No file, no source: the empty tuple is the un-harnessed install."""
     assert st.load_settings(tmp_path / "repo").harness == ()

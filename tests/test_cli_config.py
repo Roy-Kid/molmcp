@@ -10,18 +10,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from molmcp import cli
 from molmcp import settings as st
-
-
-@pytest.fixture
-def home(tmp_path, monkeypatch):
-    fake = tmp_path / "home"
-    fake.mkdir()
-    monkeypatch.setattr(st.Path, "home", staticmethod(lambda: fake))
-    return fake
 
 
 def _user_settings() -> dict:

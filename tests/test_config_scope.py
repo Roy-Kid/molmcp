@@ -11,18 +11,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from molmcp import settings as st
 from molmcp.config import AppConfig, load_config
-
-
-@pytest.fixture
-def home(tmp_path, monkeypatch):
-    fake = tmp_path / "home"
-    fake.mkdir()
-    monkeypatch.setattr(st.Path, "home", staticmethod(lambda: fake))
-    return fake
 
 
 def _write_settings(path, data) -> None:

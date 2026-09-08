@@ -17,14 +17,6 @@ import pytest
 from molmcp import settings as st
 
 
-@pytest.fixture
-def home(tmp_path, monkeypatch):
-    fake = tmp_path / "home"
-    fake.mkdir()
-    monkeypatch.setattr(st.Path, "home", staticmethod(lambda: fake))
-    return fake
-
-
 def _write(path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")
