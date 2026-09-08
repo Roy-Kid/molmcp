@@ -15,6 +15,7 @@ from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from molmcp import CollectionIndex, cli, create_plane, create_stack, runtime, server
+from molmcp import harness as harness_module
 from molmcp.components import (
     ALLOWED_REQUIRES,
     BundleSpec,
@@ -76,8 +77,14 @@ async def test_single_provider_plane_stays_bare():
 # --- autonomous harness wiring (spec 08) ----------------------------------
 #
 # Every outbound seam create_stack could reach for is faked here: no git, no
-# network, no environment. The seams are patched on ``molmcp.server`` because
-# that module is the single composition root the wiring has to live in.
+# network, no environment. Each seam is patched on the module that *names*
+# it, which is now two modules: ``molmcp.harness`` holds the checkout arms
+# and every collaborator they construct (Activation, ImmutableGitStore,
+# GitHubTransport, load_harness_catalog, WorkerProvider), while
+# ``molmcp.server`` keeps what create_stack itself calls (load_settings,
+# build_collection, discover_providers). Each arm resolves its collaborators
+# from its own module globals, so a name patched on the module that merely
+# imports that arm would never be read.
 
 _SHA = "0123456789abcdef0123456789abcdef01234567"
 _SOURCE = HarnessSource(name="official", owner="molcrafts", repo="harness", ref="main")
@@ -348,11 +355,11 @@ def _wire(
         return list(entry_points)
 
     monkeypatch.setattr(server, "load_settings", load_settings)
-    monkeypatch.setattr(server, "GitHubTransport", github_transport)
-    monkeypatch.setattr(server, "ImmutableGitStore", immutable_git_store)
-    monkeypatch.setattr(server, "Activation", _ActivationSeam(wiring, current))
-    monkeypatch.setattr(server, "load_harness_catalog", load_harness_catalog)
-    monkeypatch.setattr(server, "WorkerProvider", worker_provider)
+    monkeypatch.setattr(harness_module, "GitHubTransport", github_transport)
+    monkeypatch.setattr(harness_module, "ImmutableGitStore", immutable_git_store)
+    monkeypatch.setattr(harness_module, "Activation", _ActivationSeam(wiring, current))
+    monkeypatch.setattr(harness_module, "load_harness_catalog", load_harness_catalog)
+    monkeypatch.setattr(harness_module, "WorkerProvider", worker_provider)
     monkeypatch.setattr(server, "build_collection", build_collection)
     monkeypatch.setattr(server, "discover_providers", discover_providers)
     return wiring
@@ -765,19 +772,20 @@ def test_one_capability_object_reaches_bind_and_both_catalog_calls(
         catalog=_catalog(_provider_component()),
     )
     create_stack(config=_config(tmp_path))
-    assert server.SUPPORTED_CAPABILITIES == _CAPABILITIES
-    assert wiring.binds[0]["supported_capabilities"] is server.SUPPORTED_CAPABILITIES
+    assert harness_module.SUPPORTED_CAPABILITIES == _CAPABILITIES
+    capabilities = harness_module.SUPPORTED_CAPABILITIES
+    assert wiring.binds[0]["supported_capabilities"] is capabilities
     assert len(wiring.catalogs) == 2
     for call in wiring.catalogs:
-        assert call["capabilities"] is server.SUPPORTED_CAPABILITIES
+        assert call["capabilities"] is harness_module.SUPPORTED_CAPABILITIES
         assert call["root"] == tree
         assert call["sha"] == _SHA
 
 
 def test_supported_capabilities_is_a_subset_of_allowed_requires_not_an_alias():
     """Catalog grammar and runtime ability are two sets that happen to match."""
-    assert server.SUPPORTED_CAPABILITIES <= ALLOWED_REQUIRES
-    assert server.SUPPORTED_CAPABILITIES is not ALLOWED_REQUIRES
+    assert harness_module.SUPPORTED_CAPABILITIES <= ALLOWED_REQUIRES
+    assert harness_module.SUPPORTED_CAPABILITIES is not ALLOWED_REQUIRES
 
 
 # -- worker provider mapping and XOR ---------------------------------------

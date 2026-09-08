@@ -55,7 +55,7 @@ def _session_capability_overlays(
     and it is prepended to ``sys.path`` for the rest of the process — nothing
     takes it back off, so a checkout module that shadows an installed one goes
     on shadowing it long after the graph is built. The provider arm resolves
-    its import root by a different rule (``molmcp.server`` / ``_import_root``
+    its import root by a different rule (``molmcp.harness`` / ``_import_root``
     uses a path that names a directory as it stands); that function is where
     the reason the two coexist is written down.
 
@@ -116,8 +116,8 @@ def resolved_cache_dir(config: AppConfig) -> Path:
     decides the default, and the harness store can never land in a different
     directory than the discovery caches.
 
-    :mod:`molmcp.server` reads the root from this function precisely so that it
-    need not import :mod:`molmcp.discovery`. Discovery has exactly two
+    :mod:`molmcp.harness` reads the root from this function precisely so that
+    it need not import :mod:`molmcp.discovery`. Discovery has exactly two
     importers — this module and the CLI — and the harness wiring is not a third.
 
     Args:
