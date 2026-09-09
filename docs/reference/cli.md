@@ -102,14 +102,16 @@ is the wrong place for a credential.
 
 ## `molmcp harness`
 
-Fetch and activate the harness sources this install names. One subcommand
-today, `sync`, and it is the verb between a *configured* source and a served
-one: `molmcp config harness set` writes a source's origin and `molmcp serve`
-reads an activation pointer, with nothing fetching, publishing or activating in
-between until this runs.
+Fetch and activate the harness sources this install names. Two subcommands,
+`sync` and `rollback`, and they move one pointer in the two directions. `sync`
+is the verb between a *configured* source and a served one: `molmcp config
+harness set` writes a source's origin and `molmcp serve` reads an activation
+pointer, with nothing fetching, publishing or activating in between until this
+runs. `rollback` is the way back from a sync that turned out worse.
 
 ```bash
 molmcp harness sync official
+molmcp harness rollback official
 ```
 
 `sync` resolves the named source's ref to a commit, publishes that commit into
@@ -120,9 +122,20 @@ pointer at `<cache>/harness.<name>.pointer` — `<cache>` being the directory th
 file. What a source, a store and a pointer are is
 [Harness catalog](../concepts/harness.md).
 
+`rollback` promotes that source's `previous` SHA back to `active`. It fetches
+nothing and publishes nothing — the commit it activates is already in the store
+— so it prints only the source, the restored SHA and the pointer file.
+
+**It goes back one level; it is not a toggle.** Restoring `previous` clears it,
+so after `sync A`, `sync B`, `rollback` the pointer holds `current = A` and no
+`previous`, and a *second* `rollback` is refused exactly as a never-synced
+source is. Returning to the newer commit means syncing again — `molmcp harness
+sync official` — which re-downloads nothing, because a rollback prunes nothing
+and B's tree is still published.
+
 | Argument / flag | Meaning |
 |-----------------|---------|
-| `name` | Required, positional. The source to sync, spelled as the `harness` settings list names it. No default: with several sources configured, guessing one would fetch code the operator did not ask for. |
+| `name` | Required, positional. The source to sync or roll back, spelled as the `harness` settings list names it. No default: with several sources configured, guessing one would fetch code, or change what a plane serves, without being asked. |
 | `--config PATH` | Explicit `molcrafts.json`. Same flag as `molmcp serve`, and it can move the cache root the store and the pointer land under. |
 
 Two syncs of one commit are one sync. The second reports `already activated`

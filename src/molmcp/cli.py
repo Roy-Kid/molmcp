@@ -16,7 +16,7 @@ from .components import GitError
 from .config import AppConfig, ConfigurationError, load_config
 from .gate import run_gate
 from .harness_install import install_harness_components
-from .harness_sync import sync_source
+from .harness_sync import rollback_source, sync_source
 from .host import (
     HOSTS,
     activate_dev,
@@ -281,6 +281,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "The harness source to sync, spelled as the `harness` settings "
             "list names it. No default: with several sources configured, "
             "guessing one would fetch code the operator did not ask for."
+        ),
+    )
+    harness_rollback = harness_verbs.add_parser(
+        "rollback",
+        help="Activate the commit this source's last sync displaced.",
+    )
+    _config_argument(harness_rollback)
+    harness_rollback.add_argument(
+        "name",
+        help=(
+            "The harness source to roll back, spelled as the `harness` "
+            "settings list names it. No default, for the reason `sync` has "
+            "none: with several sources configured, guessing one would change "
+            "what a plane serves without being asked."
         ),
     )
 
@@ -708,23 +722,30 @@ def _config_harness(args: argparse.Namespace, target: Path) -> None:
 def _harness(args: argparse.Namespace) -> int:
     """Dispatch one ``molmcp harness`` verb and report what it did.
 
-    The work belongs to :func:`molmcp.harness_sync.sync_source`; this handler
+    The work belongs to :mod:`molmcp.harness_sync` — :func:`~molmcp.
+    harness_sync.sync_source` forward along the pointer and
+    :func:`~molmcp.harness_sync.rollback_source` back along it; this handler
     resolves the configuration, hands over the name, and turns the report into
-    two lines. Every failure leaves here as an exception for ``main``'s single
+    lines. Every failure leaves here as an exception for ``main``'s single
     funnel to render, so an operator of a half-configured install gets one
     sentence rather than a traceback.
 
+    ``rollback`` prints no tree because it publishes none: it moves a pointer
+    onto a commit already in the store, so the pointer file and the commit are
+    the whole of what changed.
+
     Args:
         args: The parsed ``harness`` namespace, carrying ``harness_verb`` and
-            — on the ``sync`` leaf — ``name`` plus the standard ``--config`` /
+            — on both leaves — ``name`` plus the standard ``--config`` /
             ``--env`` pair.
 
     Returns:
-        ``0`` once the commit is published and the pointer says so.
+        ``0`` once the pointer names the commit that was asked for.
 
     Raises:
         ConfigurationError: If ``harness_verb`` names a verb this handler does
-            not dispatch, or if the sync itself refuses the request.
+            not dispatch, or if the sync or rollback itself refuses the
+            request.
     """
     if args.harness_verb == "sync":
         report = sync_source(_load(args), args.name)
@@ -732,6 +753,11 @@ def _harness(args: argparse.Namespace) -> int:
         print(f"{report.source}: {report.sha} {state}")
         print(f"  tree    {report.tree}")
         print(f"  pointer {report.pointer}")
+        return 0
+    if args.harness_verb == "rollback":
+        rolled = rollback_source(_load(args), args.name)
+        print(f"{rolled.source}: rolled back to {rolled.sha}")
+        print(f"  pointer {rolled.pointer}")
         return 0
     raise ConfigurationError(
         f"unrecognized `molmcp harness` verb: {args.harness_verb!r}"

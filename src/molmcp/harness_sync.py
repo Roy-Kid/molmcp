@@ -1,4 +1,4 @@
-"""``molmcp harness sync``: the verb between a configured source and a served one.
+"""``molmcp harness sync`` and ``rollback``: the two verbs that move a pointer.
 
 ``molmcp config harness set`` writes a coordinate and ``molmcp serve`` reads an
 activation pointer. This module is what runs in between — resolve the named
@@ -7,6 +7,16 @@ it in that source's own pointer — and it is the first production caller of
 :meth:`~molmcp.components.ImmutableGitStore.publish`,
 :meth:`~molmcp.components.Activation.stage` and
 :meth:`~molmcp.components.Activation.promote`.
+
+:func:`rollback_source` is the other direction along that same pointer, and the
+first production caller of :meth:`~molmcp.components.Activation.rollback`: a
+sync records the SHA it displaced in ``previous`` for exactly one reason, and
+this is that reason. It sits beside the sync rather than in a sibling module
+because both verbs address a source by the same operator-chosen label out of
+the same settings list, so both owe an unknown name the same sentence.
+:func:`_named` and :func:`_bind` are theirs jointly, and a second module could
+reach them only by importing a private name or by keeping a second copy of a
+message whose whole value is that it does not depend on which verb was typed.
 
 Its own module rather than more of :mod:`molmcp.harness`, whose stated identity
 is that serving "is a read of the activation pointers and of each checkout's
@@ -30,6 +40,10 @@ nobody named.
 **No network is opened here.** Both transports are constructed here and neither
 is spoken to except through :class:`~molmcp.components.GitTransport`; the local
 one shells out to ``git`` in a checkout on disk and opens no socket at all.
+:func:`rollback_source` opens nothing at all: it names a transport only because
+:meth:`~molmcp.components.Activation.bind` requires a store and a store requires
+one, exactly as the two read-only callers in :mod:`molmcp.harness` and
+:mod:`molmcp.harness_install` do, and it never speaks to it.
 """
 
 from __future__ import annotations
@@ -45,7 +59,11 @@ from .components import (
     ImmutableGitStore,
     LocalGitTransport,
 )
-from .components.activate import ActivationVersionError, IneligibleShaError
+from .components.activate import (
+    ActivationVersionError,
+    IneligibleShaError,
+    NothingToRollbackError,
+)
 from .components.store import StoreError
 from .config import AppConfig, ConfigurationError
 from .harness import assert_servable
@@ -83,6 +101,27 @@ class SyncReport:
     tree: Path
     pointer: Path
     promoted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RollbackReport:
+    """What one :func:`rollback_source` call did, for the caller to print.
+
+    No published tree is named, unlike :class:`SyncReport`. A rollback reads
+    no tree at all, and :meth:`~molmcp.components.ImmutableGitStore.tree_path`
+    raises on a commit whose directory has since been pruned — a field nothing
+    needed would have turned a pointer move into a traceback.
+
+    Attributes:
+        source: Name of the harness source whose pointer moved.
+        sha: Commit now activated — the one the last sync displaced and
+            recorded as ``previous``.
+        pointer: Activation pointer file this source owns, now naming *sha*.
+    """
+
+    source: str
+    sha: str
+    pointer: Path
 
 
 def sync_source(config: AppConfig, name: str) -> SyncReport:
@@ -142,6 +181,61 @@ def sync_source(config: AppConfig, name: str) -> SyncReport:
         tree=tree,
         pointer=pointer,
         promoted=True,
+    )
+
+
+def rollback_source(config: AppConfig, name: str) -> RollbackReport:
+    """Activate the commit this source's last sync displaced.
+
+    Two steps, and neither of them fetches: bind the named source's activation
+    pointer, then move it back one level. ``previous`` is what
+    :meth:`~molmcp.components.Activation.promote` recorded when it activated a
+    commit over the one that was current, and this is the only thing that
+    reads it.
+
+    **One level, not a toggle.** :meth:`~molmcp.components.Activation.rollback`
+    clears ``previous`` as it restores it, so the record left behind names a
+    current commit and no way back: a second call refuses exactly as a
+    never-synced source does. The way *forward* to the newer commit is
+    ``molmcp harness sync``, and it re-fetches nothing, because a rollback
+    prunes nothing and that commit's tree is still published.
+
+    **The entry's origin is never consulted.**
+    :func:`~molmcp.harness.assert_servable` is deliberately not called and no
+    checkout is opened, because a rollback reaches no origin. Refusing an entry
+    here for an origin this install can no longer reach would strand precisely
+    the operator this verb exists for — the one whose checkout has since moved
+    and whose good commit is still sitting published in the store.
+
+    Args:
+        config: **Already-resolved** application configuration, for the reason
+            :func:`sync_source` takes one: the pointer this moves has to be
+            the file under the very same cache root ``molmcp serve`` reads.
+        name: The harness source to roll back, matched exactly against the
+            ``name`` of an entry in the ``harness`` settings list.
+
+    Returns:
+        The source, the commit now activated, and the pointer that says so.
+
+    Raises:
+        ConfigurationError: No entry is named *name* (the message lists the
+            ones that are configured); the source's pointer file is not a
+            readable activation record; or that record names no previous
+            commit, which is the state of a source synced once and of one
+            already rolled back alike. Nothing is written on any of those
+            paths — a source that was never synced still has no pointer file
+            afterwards, since one written here is one ``molmcp serve`` and
+            ``molmcp init`` would then have to read.
+    """
+    source = _named(load_settings(Path.cwd()).harness, name)
+    root = resolved_cache_dir(config)
+    pointer = pointer_path(root, source.name)
+    store = ImmutableGitStore(root=store_path(root), transport=GitHubTransport())
+    activation = _bind(pointer, store, source)
+    return RollbackReport(
+        source=source.name,
+        sha=_roll_back(activation, source, pointer),
+        pointer=pointer,
     )
 
 
@@ -250,7 +344,8 @@ def _bind(pointer: Path, store: ImmutableGitStore, source: HarnessSource) -> Act
             one is not an error — it binds an empty record, which is the
             never-synced install.
         store: The shared store the activation checks eligibility against.
-        source: The entry being synced, named in the failure message.
+        source: The entry being synced or rolled back, named in the failure
+            message.
 
     Returns:
         The bound activation.
@@ -314,4 +409,76 @@ def _stage_and_promote(
     activation.promote()
 
 
-__all__ = ["SyncReport", "sync_source"]
+def _roll_back(activation: Activation, source: HarnessSource, pointer: Path) -> str:
+    """Move *activation* back one level and return the commit now activated.
+
+    The refusal is raised from two sites and the two are not redundant. The
+    guard runs before anything is written, and it is the one an operator hits:
+    a verb that reported "nothing to roll back" over a record it had already
+    replaced would leave the install activating nothing at all, which is worse
+    than the state it refused. The handler answers the same condition as seen
+    by :meth:`~molmcp.components.Activation.rollback`'s own reload of the file,
+    which is what another process moving the pointer in between looks like.
+    Both spell one sentence, because it is one condition.
+
+    Converting rather than leaving it to ``cli.main``'s funnel is the choice
+    here: ``NothingToRollbackError`` is an ``ActivationError``, which is a
+    plain ``Exception``, so it is caught by none of the types that funnel
+    registers and would otherwise reach the operator as a traceback. The other
+    way to close that is to register ``ActivationError`` there, but the raw
+    message is ``nothing to rollback`` — it names neither the source nor the
+    way forward, so it is not a sentence a CLI can hand over. That is why
+    ``IneligibleShaError``, ``StoreError`` and ``ActivationVersionError`` are
+    converted in this module too, and the opposite of ``GitError``, whose own
+    message already names the ref or the checkout git could not answer for.
+
+    Args:
+        activation: The bound pointer to move.
+        source: The entry being rolled back, named in the failure message.
+        pointer: That source's pointer file, named in the failure message so
+            there is a file to go and look at.
+
+    Returns:
+        The commit that is activated once the pointer has moved: the one
+        ``previous`` named.
+
+    Raises:
+        ConfigurationError: The record names no previous commit. The pointer
+            file is left exactly as it was, and a missing one is not created.
+    """
+    previous = activation.previous
+    if previous is None:
+        raise _nothing_to_roll_back(source, pointer)
+    try:
+        activation.rollback()
+    except NothingToRollbackError as exc:
+        raise _nothing_to_roll_back(source, pointer) from exc
+    return previous
+
+
+def _nothing_to_roll_back(source: HarnessSource, pointer: Path) -> ConfigurationError:
+    """Build the refusal for an activation record with no previous commit.
+
+    Returned rather than raised so that both sites in :func:`_roll_back` hand
+    the operator the same sentence without a second copy of it.
+
+    Args:
+        source: The entry that was to be rolled back.
+        pointer: That source's activation pointer file.
+
+    Returns:
+        The error to raise.
+    """
+    return ConfigurationError(
+        f"the harness source named {source.name!r} has no commit to roll back "
+        f"to: its activation pointer records no previous commit. That is the "
+        f"state of a source synced only once, and of one already rolled back "
+        f"— rollback clears the previous commit as it restores it, so it goes "
+        f"back one level rather than toggling between two. To move forward "
+        f"again, run `molmcp harness sync {source.name}`; the commit it "
+        f"activates is still published, so nothing is re-fetched. Nothing was "
+        f"written to {pointer}."
+    )
+
+
+__all__ = ["RollbackReport", "SyncReport", "rollback_source", "sync_source"]

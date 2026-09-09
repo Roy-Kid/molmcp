@@ -1,10 +1,18 @@
-"""`molmcp harness sync` — the verb between a configured source and a served one.
+"""`molmcp harness sync` and `rollback` — the two verbs that move a pointer.
 
 ``molmcp config harness set`` writes a coordinate and ``molmcp serve`` reads
 an activation pointer, and until this verb exists nothing fetches, publishes
 or activates in between: ``store.publish``, ``Activation.stage`` and
 ``Activation.promote`` have no production caller at all, so a configured
 source can never become a served one.
+
+``molmcp harness rollback`` is the other direction along that same pointer.
+``sync`` moves it forward and records the SHA it displaced in ``previous``,
+which exists for exactly one reason — going back — and until this verb exists
+``Activation.rollback`` has no production caller either, so an operator who
+synced a harness that turned out worse has no supported way back at all: only
+hand-editing a JSON pointer file, which is not a thing a shipped install may
+require.
 
 Its own module rather than more of ``tests/test_cli_config.py``, following the
 split already in this suite — ``molmcp cache`` has ``test_cli_cache.py`` and
@@ -62,6 +70,25 @@ members = ["skill.daily"]
 """
 _SKILL = "# daily\n"
 _SCRATCH = "still being edited\n"
+
+#: The same catalog one commit later: the ``daily`` skill has been rewritten
+#: and a second skill declared. Two commits that differ in *both* ways are
+#: what makes "the pointer went back" checkable on disk — a rollback that
+#: restored only the SHA string would leave the newer text in place, and one
+#: that restored a tree but read the newer catalog would still place the row
+#: only the newer commit declares. ``review`` sits in no bundle, which the
+#: catalog allows: only an unknown *member* is refused.
+_REVISED_MANIFEST = (
+    _MANIFEST
+    + """
+[[component]]
+kind = "skill"
+name = "review"
+path = "skills/review/SKILL.md"
+"""
+)
+_REVISED_SKILL = "# daily, rewritten badly\n"
+_REVIEW_SKILL = "# review\n"
 
 #: Identity for the commits made here, passed per invocation so no
 #: developer's global git config is read and none is written to ``tmp_path``.
@@ -127,6 +154,19 @@ def _checkout(root: Path) -> tuple[Path, str]:
     _write(root / "harness.toml", _MANIFEST)
     _write(root / "skills" / "daily" / "SKILL.md", _SKILL)
     return root, _commit(root, "first")
+
+
+def _revise(root: Path) -> str:
+    """Commit a worse second version of *root*; returns the new SHA.
+
+    The regression an operator would want undone, made real: the file the
+    catalog already declared is rewritten, the catalog grows a row, and both
+    land in one commit so a single ``sync`` moves the pointer past them.
+    """
+    _write(root / "harness.toml", _REVISED_MANIFEST)
+    _write(root / "skills" / "daily" / "SKILL.md", _REVISED_SKILL)
+    _write(root / "skills" / "review" / "SKILL.md", _REVIEW_SKILL)
+    return _commit(root, "second")
 
 
 def _archive(root: Path, sha: str) -> bytes:
@@ -216,6 +256,24 @@ def cache(home, monkeypatch, tmp_path) -> Path:
     work.mkdir()
     monkeypatch.chdir(work)
     return tmp_path / "cache"
+
+
+@pytest.fixture
+def synced_twice(cache, tmp_path) -> tuple[str, str]:
+    """One local source synced at two commits; returns ``(first, second)``.
+
+    Both syncs are the real verb. A fixture that wrote the pointer JSON
+    directly would be asserting against its own arithmetic: ``previous`` is
+    the only thing ``rollback`` has to work with, and it is filled by
+    ``promote`` during the second sync, so a ``sync`` that stopped recording
+    the SHA it displaced has to fail here rather than be papered over.
+    """
+    root, first = _checkout(tmp_path / "checkout")
+    _install(cache, {"name": "official", "path": str(root)})
+    assert cli.main(["harness", "sync", "official"]) == 0
+    second = _revise(root)
+    assert cli.main(["harness", "sync", "official"]) == 0
+    return first, second
 
 
 class TestHarnessSync:
@@ -575,4 +633,219 @@ class TestHarnessSyncErrors:
         err = capsys.readouterr().err
         assert err.startswith("molmcp:")
         assert "official" in err
+        assert not pointer_path(cache, "official").exists()
+
+
+class TestHarnessRollback:
+    """The way back: ``previous`` becomes current, asserted on the real files.
+
+    ``sync`` records the SHA it displaced for one reason, and this is that
+    reason. Nothing here is faked between the verb and the disk: the pointer
+    read is the file ``molmcp serve`` binds and the store read is the one it
+    serves out of, because a seam standing in for either would keep passing
+    while the operator's install went on serving the commit they asked to
+    leave.
+    """
+
+    def test_rollback_activates_the_commit_the_last_sync_displaced(
+        self, cache, synced_twice
+    ):
+        """A then B then rollback: A is current again, and B is not.
+
+        The raw JSON is asserted beside the bound record because ``active``
+        is the field a second process reads; a rollback that moved only an
+        in-memory record would satisfy the reader that wrote it and nothing
+        else.
+
+        ``previous is None`` afterwards is not incidental — it is the record
+        transition ``Activation.rollback`` performs (previous → current,
+        previous cleared, staged untouched) and therefore the answer to what
+        a *second* rollback can do. It is pinned here so the CLI cannot
+        quietly acquire a different one, and exercised in
+        :class:`TestHarnessRollbackErrors`.
+        """
+        first, second = synced_twice
+        assert _activation(cache, "official").current == second
+
+        assert cli.main(["harness", "rollback", "official"]) == 0
+
+        pointer = json.loads(
+            pointer_path(cache, "official").read_text(encoding="utf-8")
+        )
+        assert pointer["active"] == first
+        activation = _activation(cache, "official")
+        assert activation.current == first
+        assert activation.previous is None
+        assert activation.staged is None
+
+    def test_the_restored_commit_is_still_a_readable_tree_in_the_store(
+        self, cache, synced_twice
+    ):
+        """Why ``previous`` is worth keeping: the tree it names never left.
+
+        A pointer holds names, not trees, so "rolled back" is only true if
+        the older commit is still published and still holds the older files.
+        Both are checked, and so is the newer commit — ``rollback`` moves a
+        pointer and prunes nothing, which is what makes a re-``sync`` forward
+        a no-op rather than a fetch.
+        """
+        first, second = synced_twice
+
+        assert cli.main(["harness", "rollback", "official"]) == 0
+
+        store = _store(cache)
+        assert store.has(first)
+        assert (store.tree_path(first) / "harness.toml").read_text() == _MANIFEST
+        assert (
+            store.tree_path(first) / "skills" / "daily" / "SKILL.md"
+        ).read_text() == (_SKILL)
+        assert not (store.tree_path(first) / "skills" / "review" / "SKILL.md").exists()
+        assert store.has(second)
+        assert (
+            store.tree_path(second) / "skills" / "daily" / "SKILL.md"
+        ).read_text() == (_REVISED_SKILL)
+
+    def test_init_places_the_components_of_the_rolled_back_commit(
+        self, cache, home, monkeypatch, synced_twice
+    ):
+        """The point of the verb: the host follows the pointer.
+
+        ``molmcp init`` is run once, *after* the rollback, so every file
+        under the host directory was placed by a run that read the restored
+        pointer. Both halves of the claim are checkable that way: the
+        ``daily`` skill carries the older commit's bytes rather than the ones
+        that prompted the rollback, and the row only the newer catalog
+        declares was never even resolved. Running init before the rollback as
+        well would prove neither — placement replaces destinations and
+        removes none, so the newer file would still be sitting there.
+
+        The plane list is pinned because ``init`` renders its MCP JSON from
+        whatever providers this machine can import, which is a fact about the
+        developer's environment rather than about the pointer under test.
+        """
+        monkeypatch.setattr(
+            "molmcp.client_config.default_plane_ids",
+            lambda: ("molcrafts", "molvis"),
+        )
+
+        assert cli.main(["harness", "rollback", "official"]) == 0
+        assert cli.main(["init", "claude"]) == 0
+
+        skills = home / ".claude" / "skills"
+        assert (skills / "daily" / "SKILL.md").read_text() == _SKILL
+        assert not (skills / "review" / "SKILL.md").exists()
+
+
+class TestHarnessRollbackErrors:
+    """Nothing to go back to is an ordinary install state, not a crash.
+
+    ``NothingToRollbackError`` is an ``ActivationError``, which is a plain
+    ``Exception``: it is in none of the types ``cli.main`` funnels
+    (``ConfigurationError``, ``FileNotFoundError``, ``ValueError``,
+    ``SettingsError``, ``sqlite3.Error``, ``OSError``, ``GitError``), so
+    left alone it reaches the operator as a traceback — the same gap
+    ``GitError`` had to be registered to close on the sync side. Whether the
+    verb converts it or the funnel registers it is the implementation's
+    choice; that the funnel is reached, and answers with its exit code, is
+    not, so ``2`` is pinned rather than "non-zero".
+    """
+
+    def test_a_source_synced_exactly_once_has_no_commit_to_return_to(
+        self, cache, tmp_path, capsys
+    ):
+        """One sync fills ``current`` and leaves ``previous`` empty.
+
+        The pointer is asserted afterwards as well: a verb that reported the
+        refusal but had already written a record would leave the install
+        activating nothing at all, which is worse than the state it refused.
+        """
+        root, head = _checkout(tmp_path / "checkout")
+        _install(cache, {"name": "official", "path": str(root)})
+        assert cli.main(["harness", "sync", "official"]) == 0
+
+        assert cli.main(["harness", "rollback", "official"]) == 2
+
+        err = capsys.readouterr().err
+        assert err.startswith("molmcp:")
+        assert "official" in err
+        # One concern spelled the two ways it can be spelled: the English and
+        # the verb's own name. Not a disjunction of behaviours.
+        assert "roll back" in err.lower() or "rollback" in err.lower()
+        activation = _activation(cache, "official")
+        assert activation.current == head
+        assert activation.previous is None
+
+    def test_a_source_that_was_never_synced_writes_no_pointer_file(
+        self, cache, tmp_path, capsys
+    ):
+        """A configured source is not a synced one, and refusing must not create one.
+
+        The missing pointer *is* the empty record, so this reaches the same
+        refusal by a different road — and the file must still be missing
+        afterwards, because a pointer written here would be one
+        ``molmcp init`` and ``molmcp serve`` then have to read.
+        """
+        root, _ = _checkout(tmp_path / "checkout")
+        _install(cache, {"name": "official", "path": str(root)})
+
+        assert cli.main(["harness", "rollback", "official"]) == 2
+
+        err = capsys.readouterr().err
+        assert err.startswith("molmcp:")
+        assert "official" in err
+        assert not pointer_path(cache, "official").exists()
+
+    def test_a_second_rollback_is_refused_rather_than_returning_to_the_newer_commit(
+        self, cache, synced_twice
+    ):
+        """``rollback`` is one level deep, not a toggle between two commits.
+
+        ``Activation.rollback`` clears ``previous`` as it restores it, so
+        after A→B→rollback there is no recorded way *forward*: the second
+        call finds ``previous is None`` and refuses exactly as a
+        never-synced source does. That is the behaviour an operator hits when
+        they type the command twice, so it is pinned rather than assumed —
+        the alternative reading, that a second rollback returns to B, would
+        make the verb a switch and would need a record transition this
+        install does not have.
+
+        The way back to B is a fresh ``sync``, and the assertion that this is
+        possible is the last one: B's tree is still published, so that sync
+        re-fetches nothing.
+        """
+        first, second = synced_twice
+        assert cli.main(["harness", "rollback", "official"]) == 0
+
+        assert cli.main(["harness", "rollback", "official"]) == 2
+
+        activation = _activation(cache, "official")
+        assert activation.current == first
+        assert activation.previous is None
+        assert activation.staged is None
+        assert _store(cache).has(second)
+
+    def test_an_unknown_source_name_lists_the_configured_ones(
+        self, cache, tmp_path, capsys
+    ):
+        """The same refusal ``sync`` gives, because it is the same question.
+
+        Both verbs address a source by an operator-chosen label out of the
+        same settings list, so "unknown source" on one and a helpful sentence
+        on the other would make which command was typed decide whether the
+        operator learns what they should have typed.
+        """
+        root, _ = _checkout(tmp_path / "checkout")
+        _install(
+            cache,
+            {"name": "official", "path": str(root)},
+            {"name": "private", "owner": "acme", "repo": "tooling", "ref": "trunk"},
+        )
+
+        assert cli.main(["harness", "rollback", "ghost"]) != 0
+
+        err = capsys.readouterr().err
+        assert err.startswith("molmcp:")
+        assert "ghost" in err
+        assert "official" in err
+        assert "private" in err
         assert not pointer_path(cache, "official").exists()
