@@ -39,12 +39,12 @@ class OverlayLoadError(ValueError):
 
 
 def _session_capability_overlays(
-    seeds: Sequence[ComponentSpec], tree_path: Path
+    seeds: Sequence[ComponentSpec], base: Path
 ) -> tuple[CapabilityOverlay, ...]:
     """Construct the activated checkout's capability overlays in this process.
 
     Every seed names a ``module:object`` entrypoint. The directory holding
-    the seed's ``path`` inside ``tree_path`` goes on ``sys.path``, the module
+    the seed's ``path`` inside *base* goes on ``sys.path``, the module
     half is imported, and the named object is called as a factory. The result
     must satisfy :class:`~molmcp.discovery.overlay.CapabilityOverlay`; one
     that does not is a named error rather than a skipped warning, because a
@@ -70,7 +70,14 @@ def _session_capability_overlays(
 
     Args:
         seeds: Overlay ``ComponentSpec`` rows read from the harness catalog.
-        tree_path: Root of the activated checkout the seed paths resolve under.
+        base: The directory this source's component paths resolve under —
+            :meth:`molmcp.harness.ComponentFold.root_for`'s answer.
+            Deliberately not named for a checkout root: it is the tree
+            ``harness.toml`` sits at only while that source's catalog
+            declares no ``component_root``, and the two part company the
+            moment one does. This function is not told which case it is in
+            and does not need to be; it takes a base directory and knows
+            nothing about where it came from.
 
     Returns:
         One overlay instance per seed, in seed order.
@@ -94,7 +101,7 @@ def _session_capability_overlays(
         if entrypoint is None:
             raise OverlayLoadError(f"overlay component {seed.name!r} has no entrypoint")
         module_name, _, attribute = entrypoint.partition(":")
-        import_root = str((tree_path / seed.path).parent)
+        import_root = str((base / seed.path).parent)
         if import_root not in sys.path:
             sys.path.insert(0, import_root)
         instance = getattr(importlib.import_module(module_name), attribute)()

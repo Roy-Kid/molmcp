@@ -349,3 +349,19 @@ class TestSessionCapabilityOverlays:
         ]
         assert aliases == []
         assert not hasattr(runtime, "overlay_loader")
+
+    def test_the_parameters_are_seeds_and_a_base(self):
+        """``base``, not ``tree_path``: what arrives is a resolved base.
+
+        A harness catalog may declare a ``component_root``, and from that
+        moment the second argument is ``ComponentFold.root_for``'s answer
+        rather than the checkout tree ``harness.toml`` sits at. A parameter
+        still naming it a tree would be a comment that lies about half the
+        cases, and it is a name the caller may pass by keyword.
+
+        The pin lives here because this class owns the loader's contract.
+        A ``tests/test_stack.py`` test going red because a runtime parameter
+        was renamed would be choreography, not the owner's contract.
+        """
+        loader = getattr(runtime, _SESSION_OVERLAYS)
+        assert tuple(inspect.signature(loader).parameters) == ("seeds", "base")

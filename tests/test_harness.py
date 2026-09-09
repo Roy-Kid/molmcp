@@ -8,7 +8,7 @@ disciplines, and ``test_harness_catalog_fixture.py`` parses ``docs/``. This
 one is the ``src/molmcp/harness.py`` mirror the layout rule asks for, and
 covers only the symbols that module owns.
 
-Four units are exercised here, each in isolation:
+Six units are exercised here, each in isolation:
 
 *``pointer_path`` is a security fix, not a formatting helper.*
 ``HarnessSource.name`` is governed only as "non-empty, whitespace-free":
@@ -35,6 +35,20 @@ depends on proves only the call order (``notes.md:faked-seam-hides-broken-reader
 Nothing fetches, no store is constructed, and no pointer is bound — how a
 catalog reaches a checkout is ``activated_checkouts``' problem, and is covered
 by the class below.
+
+*``ComponentFold`` carries one base per source, as the authored string.*
+``root_for`` is the only place a tree and a catalog's ``component_root`` are
+joined, and it joins them against *that source's own* ``Checkout.tree`` — so a
+base belonging to the wrong tree is not a state the type can hold. The five
+disagreeing constructions its ``__post_init__`` refuses are built by hand,
+because four of them cannot be reached through ``fold_components`` at all.
+
+*``checkout_planes`` is the provider half of one property.* The failure the
+``component_root`` key exists to make unreachable is being applied in one arm
+and forgotten in the other — providers resolving while overlays do not, an
+install that *looks* like it works. This file owns the provider arm, driven
+over a real tree; ``tests/test_stack.py`` owns the overlay arm, because that
+one is ``create_stack``'s composition rather than this module's.
 
 *``activated_checkouts`` is driven with no seam at all.* The five names
 ``tests/test_stack.py``'s ``_wire`` fakes — ``Activation``,
@@ -101,7 +115,7 @@ def _skill(name: str) -> ComponentSpec:
     )
 
 
-def _catalog_toml(specs: Sequence[ComponentSpec]) -> str:
+def _catalog_toml(specs: Sequence[ComponentSpec], *, component_root: str = "") -> str:
     """Render specs as the ``harness.toml`` a real checkout would carry.
 
     Every catalog must declare a ``daily`` and a ``dev`` bundle
@@ -109,6 +123,20 @@ def _catalog_toml(specs: Sequence[ComponentSpec]) -> str:
     (``models.py:167``), so both bundles list every component in the file.
     No catalog-level ``requires`` is emitted: eligibility is
     ``load_harness_catalog``'s subject, not the fold's.
+
+    Args:
+        specs: Component rows, rendered in the order they are given — which
+            is the catalog order the fold preserves within a source.
+        component_root: Optional top-level ``component_root``. It is emitted
+            **above** the first ``[[component]]``, because a bare key written
+            after a table header belongs to that table and TOML would read it
+            as a component field. The empty default emits no key at all,
+            which is what every catalog in this file carried before the key
+            existed and what every rootless catalog carries now.
+
+    Returns:
+        The whole document, component paths exactly as the specs authored
+        them: ``component_root`` is carried beside them and never folded in.
     """
     members = ", ".join(f'"{spec.id}"' for spec in specs)
     rows: list[str] = []
@@ -126,7 +154,10 @@ def _catalog_toml(specs: Sequence[ComponentSpec]) -> str:
         rows.append(
             f'[[component]]\nkind = "bundle"\nname = "{bundle}"\nmembers = [{members}]'
         )
-    return "\n\n".join(rows) + "\n"
+    document = "\n\n".join(rows) + "\n"
+    if not component_root:
+        return document
+    return f'component_root = "{component_root}"\n\n' + document
 
 
 def _checkout(
@@ -134,11 +165,21 @@ def _checkout(
     source: str,
     sha: str,
     specs: Sequence[ComponentSpec],
+    *,
+    component_root: str = "",
 ) -> harness.Checkout:
-    """A checkout whose tree really holds the catalog these specs describe."""
+    """A checkout whose tree really holds the catalog these specs describe.
+
+    *component_root* goes into that catalog, never into the tree.
+    ``Checkout.tree`` means "where ``harness.toml`` sits" and keeps that
+    contract whatever the value is: folding the component root into the tree
+    would move the catalog file too.
+    """
     tree = root / source / "tree"
     tree.mkdir(parents=True)
-    (tree / "harness.toml").write_text(_catalog_toml(specs), encoding="utf-8")
+    (tree / "harness.toml").write_text(
+        _catalog_toml(specs, component_root=component_root), encoding="utf-8"
+    )
     return harness.Checkout(sha=sha, tree=tree, source=source)
 
 
@@ -583,6 +624,7 @@ class TestFoldComponents:
         assert not hasattr(fold, "displaced")
         assert tuple(f.name for f in dataclasses.fields(fold)) == (
             "checkouts",
+            "component_roots",
             "kept",
         )
 
@@ -618,6 +660,294 @@ class TestFoldComponents:
             fold.kept = ()
         with pytest.raises(_ASSIGN_ERRORS):
             fold.checkouts = ()
+
+
+class TestComponentFold:
+    """One base per source, stored as the authored string and joined once.
+
+    ``fold_components`` is the subject of the class above; this one is
+    :class:`~molmcp.harness.ComponentFold` itself, because four of the five
+    disagreeing constructions its ``__post_init__`` refuses cannot be reached
+    through the folder at all and have to be built by hand.
+
+    **Why the raw string is stored and not the join.** ``tree`` already lives
+    on the ``Checkout`` objects the fold carries, so a stored
+    ``tree / component_root`` would be a second copy of a fact the object
+    already holds — the parallel ``source -> tree`` map ``ComponentFold``'s
+    own docstring argues against — and the invariant would then exist only to
+    police the agreement between two copies of one fact. With the string
+    stored and the join performed inside ``root_for`` against *that source's
+    own* ``Checkout.tree``, "the base belongs to the right tree" is a
+    **theorem** rather than an assertion: there is no other tree ``root_for``
+    can reach. That is why nothing below tests a base pointing at an
+    unrelated path — the state is not representable, so there is nothing to
+    assert about it.
+    """
+
+    def _two_sources(
+        self,
+        tmp_path: Path,
+        *,
+        official_root: str = "",
+        private_root: str = "",
+    ) -> tuple[harness.Checkout, harness.Checkout]:
+        """``official`` then ``private``, one provider row each, real files."""
+        return (
+            _checkout(
+                tmp_path,
+                "official",
+                _OFFICIAL_SHA,
+                [_provider("alpha", "official.plane:Alpha")],
+                component_root=official_root,
+            ),
+            _checkout(
+                tmp_path,
+                "private",
+                _PRIVATE_SHA,
+                [_provider("gamma", "private.plane:Gamma")],
+                component_root=private_root,
+            ),
+        )
+
+    def test_a_rooted_catalog_answers_the_tree_joined_to_its_component_root(
+        self, tmp_path: Path
+    ) -> None:
+        """``component_root = "plugins/mol"`` answers ``tree/plugins/mol``.
+
+        The expected path is spelled segment by segment rather than as the
+        input string re-joined, so the assertion is not the implementation
+        written twice.
+        """
+        official, _ = self._two_sources(tmp_path, official_root="plugins/mol")
+
+        fold = harness.fold_components((official,), ComponentKind.PROVIDER)
+
+        assert fold.root_for("official") == official.tree / "plugins" / "mol"
+
+    def test_a_rootless_catalog_answers_exactly_the_tree(self, tmp_path: Path) -> None:
+        """No key means the tree object itself, not another spelling of it.
+
+        Path equality against the tree *this test built* is the assertion,
+        so anything that is not that exact :class:`~pathlib.Path` fails —
+        including a string carrying a stray ``.`` component or a trailing
+        separator. This is what keeps every install that has no
+        ``component_root`` today resolving byte-identical paths tomorrow.
+        """
+        official, _ = self._two_sources(tmp_path)
+
+        fold = harness.fold_components((official,), ComponentKind.PROVIDER)
+
+        base = fold.root_for("official")
+        assert base == official.tree
+        assert base.is_dir()
+
+    def test_each_source_is_answered_with_its_own_base(self, tmp_path: Path) -> None:
+        """One rooted source and one rootless source, in one fold.
+
+        This is the case a *global* application of ``component_root`` gets
+        wrong. Applied to the fold rather than per source, the rootless
+        source's components would resolve under a directory its own catalog
+        never named — and its neighbour's would resolve correctly, which is
+        exactly the half-working install that is hardest to diagnose.
+        """
+        official, private = self._two_sources(tmp_path, official_root="plugins/mol")
+
+        fold = harness.fold_components((official, private), ComponentKind.PROVIDER)
+
+        assert fold.root_for("official") == official.tree / "plugins" / "mol"
+        assert fold.root_for("private") == private.tree
+
+    def test_component_roots_holds_the_authored_string_not_the_join(
+        self, tmp_path: Path
+    ) -> None:
+        """The field is ``source -> str``, in source order, verbatim.
+
+        A joined ``Path`` here would be the parallel map the type refuses to
+        carry; the string is the fold's own datum, because no ``Checkout``
+        holds it — ``activated_checkouts`` reads no catalog.
+        """
+        official, private = self._two_sources(tmp_path, official_root="plugins/mol")
+
+        fold = harness.fold_components((official, private), ComponentKind.PROVIDER)
+
+        assert fold.component_roots == (
+            ("official", "plugins/mol"),
+            ("private", ""),
+        )
+
+    def test_component_roots_has_no_default(self) -> None:
+        """A fold cannot be built without saying what each source's base is.
+
+        A default would make the field's absence mean "every source is
+        rootless", which is a wrong answer rather than a missing one.
+        """
+        fields = {f.name: f for f in dataclasses.fields(harness.ComponentFold)}
+        assert "component_roots" in fields
+        assert fields["component_roots"].default is dataclasses.MISSING
+        assert fields["component_roots"].default_factory is dataclasses.MISSING
+        with pytest.raises(TypeError):
+            harness.ComponentFold(checkouts=(), kept=())
+
+    def test_root_for_an_unknown_source_is_refused(self, tmp_path: Path) -> None:
+        """``unknown-source: 'nobody'`` — the register ``get`` already uses.
+
+        ``specs_from`` tolerates an unknown source and answers ``()``;
+        ``root_for`` deliberately does not copy that tolerance. There is no
+        empty ``Path`` a caller could use, and a wrong base is the
+        half-applied failure this whole design exists to prevent.
+        """
+        official, private = self._two_sources(tmp_path)
+
+        fold = harness.fold_components((official, private), ComponentKind.PROVIDER)
+
+        with pytest.raises(CatalogError) as excinfo:
+            fold.root_for("nobody")
+
+        message = str(excinfo.value)
+        assert "unknown-source" in message
+        assert repr("nobody") in message
+
+    def test_a_source_missing_from_component_roots_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Every checkout must have a base; a fold cannot answer for two."""
+        official, private = self._two_sources(tmp_path)
+
+        with pytest.raises(CatalogError):
+            harness.ComponentFold(
+                checkouts=(official, private),
+                component_roots=(("official", ""),),
+                kept=(),
+            )
+
+    def test_a_misnamed_source_in_component_roots_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """A typo names a source nothing folded, and leaves one unanswered."""
+        official, private = self._two_sources(tmp_path)
+
+        with pytest.raises(CatalogError):
+            harness.ComponentFold(
+                checkouts=(official, private),
+                component_roots=(("official", ""), ("privte", "plugins/mol")),
+                kept=(),
+            )
+
+    def test_an_extra_source_in_component_roots_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """A base for a source this fold was not built from answers nobody."""
+        official, _ = self._two_sources(tmp_path)
+
+        with pytest.raises(CatalogError):
+            harness.ComponentFold(
+                checkouts=(official,),
+                component_roots=(("official", ""), ("private", "plugins/mol")),
+                kept=(),
+            )
+
+    def test_a_duplicated_source_in_component_roots_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The clause this one needs is uniqueness on the *roots* side.
+
+        Set equality alone admits it — ``{"official", "private"}`` on both
+        sides — and ``root_for``'s linear scan would then answer with
+        whichever entry it met first, silently, while a second entry naming
+        the same source said something else.
+        """
+        official, private = self._two_sources(tmp_path)
+
+        with pytest.raises(CatalogError):
+            harness.ComponentFold(
+                checkouts=(official, private),
+                component_roots=(
+                    ("official", ""),
+                    ("official", "plugins/mol"),
+                    ("private", ""),
+                ),
+                kept=(),
+            )
+
+    def test_two_checkouts_sharing_a_source_name_are_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The clause this one needs is uniqueness on the *checkouts* side.
+
+        Set equality holds and ``component_roots`` is unique, so every
+        narrower invariant admits this pair — and ``root_for``'s scan would
+        answer with the first checkout's tree while the second one's
+        components resolved nowhere. ``activated_checkouts`` already refuses
+        a duplicate source name, but ``ComponentFold`` is directly
+        constructible and cannot rely on its own caller.
+        """
+        first = _checkout(
+            tmp_path / "first",
+            "official",
+            _OFFICIAL_SHA,
+            [_provider("alpha", "official.plane:Alpha")],
+        )
+        second = _checkout(
+            tmp_path / "second",
+            "official",
+            _PRIVATE_SHA,
+            [_provider("gamma", "other.plane:Gamma")],
+        )
+        assert first.tree != second.tree
+
+        with pytest.raises(CatalogError):
+            harness.ComponentFold(
+                checkouts=(first, second),
+                component_roots=(("official", ""),),
+                kept=(),
+            )
+
+
+class TestCheckoutPlanes:
+    """The provider arm, over a real tree: half a harness made unreachable.
+
+    A fold has two consumers — this one and the overlay seam in
+    ``molmcp.runtime`` — and the failure ``component_root`` exists to kill is
+    being applied in one of them and forgotten in the other. Providers that
+    resolve while overlays do not is far harder to diagnose than an install
+    that resolves nothing, because it looks like it works. This class is the
+    provider half; ``tests/test_stack.py`` owns the overlay half, which is
+    ``create_stack``'s composition rather than this module's contract.
+    """
+
+    def test_a_rooted_provider_is_imported_from_under_the_component_root(
+        self, tmp_path: Path
+    ) -> None:
+        """``plugins/mol`` + ``providers/demo/plane.py`` — one directory.
+
+        The module file is really planted, so ``_import_root`` takes its
+        a-file-hands-back-its-parent branch rather than the directory branch,
+        and the resolved base is the one a child process would import from.
+        """
+        checkout = _checkout(
+            tmp_path,
+            "official",
+            _OFFICIAL_SHA,
+            [_provider("demo", "demo.plane:DemoPlane")],
+            component_root="plugins/mol",
+        )
+        module = checkout.tree / "plugins" / "mol" / "providers" / "demo" / "plane.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("", encoding="utf-8")
+
+        planes = harness.checkout_planes(
+            harness.fold_components((checkout,), ComponentKind.PROVIDER)
+        )
+
+        assert len(planes) == 1
+        assert planes[0].name == "demo"
+        # ``WorkerProvider`` keeps its import root private and publishes only
+        # ``probe()``, so the exact answer is read off ``_path`` and the
+        # public consequence is asserted beside it: a base under the wrong
+        # directory is a directory that does not exist, which is what an
+        # operator actually meets when the two arms disagree.
+        assert Path(planes[0]._path) == module.parent
+        assert planes[0].probe() is True
 
 
 class TestActivatedCheckouts:

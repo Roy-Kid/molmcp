@@ -114,13 +114,18 @@ def _config(tmp_path: Path) -> AppConfig:
     )
 
 
-def _catalog(*components: ComponentSpec, sha: str = _SHA) -> HarnessCatalog:
+def _catalog(
+    *components: ComponentSpec, sha: str = _SHA, component_root: str = ""
+) -> HarnessCatalog:
     """A real catalog: the two required bundles plus *components*.
 
     ``sha`` is the commit the catalog claims to describe. It matters only
     when two sources are activated at two different commits, because the SHA
     is the one argument a faked ``load_harness_catalog`` can tell two
     checkouts apart by — every checkout in this suite shares one tree.
+
+    ``component_root`` defaults to the absent key, so every call site written
+    before it describes a rootless catalog and reads exactly as it did.
     """
     return HarnessCatalog(
         sha=sha,
@@ -130,6 +135,7 @@ def _catalog(*components: ComponentSpec, sha: str = _SHA) -> HarnessCatalog:
             BundleSpec(name="daily", members=("skill.daily",)),
             BundleSpec(name="dev", members=("skill.daily",)),
         ),
+        component_root=component_root,
     )
 
 
@@ -155,10 +161,41 @@ def _provider_component(
     )
 
 
-def _checkout(tmp_path: Path) -> Path:
-    """A tree holding ``providers/demo/`` as a directory and a module in it."""
+def _overlay_component(
+    path: str = "overlays/demo.py",
+    *,
+    name: str = "demo",
+    entrypoint: str = "demo:make_overlay",
+) -> ComponentSpec:
+    """A checkout overlay row — one seed for the overlay arm to hand on.
+
+    Nothing here is ever imported: ``_wire`` fakes the loader itself, so the
+    row only has to be a real ``ComponentSpec`` of the kind the overlay fold
+    keeps. What a seed is imported *from* is this file's subject, and that
+    base is recorded rather than resolved; the real loader is driven against
+    a real tree in ``tests/test_runtime.py``.
+    """
+    return ComponentSpec(
+        kind=ComponentKind.OVERLAY,
+        name=name,
+        id=f"overlay.{name}",
+        path=path,
+        entrypoint=entrypoint,
+    )
+
+
+def _checkout(tmp_path: Path, *, component_root: str = "") -> Path:
+    """A tree holding ``providers/demo/`` as a directory and a module in it.
+
+    ``component_root`` plants that directory under the catalog-declared root
+    instead of at the top of the tree, so ``_import_root``'s
+    a-directory-is-used-as-it-stands branch answers about the base the fold
+    resolved rather than about the tree. The return value stays the *tree* —
+    what a store hands back — because that is what ``_wire`` is given.
+    """
     tree = tmp_path / "tree"
-    package = tree / "providers" / "demo"
+    base = tree.joinpath(*component_root.split("/")) if component_root else tree
+    package = base / "providers" / "demo"
     package.mkdir(parents=True)
     (package / "plane.py").write_text("", encoding="utf-8")
     return tree
@@ -355,6 +392,7 @@ class _Wiring:
     stores: list[_FakeStore] = field(default_factory=list)
     binds: list[dict[str, object]] = field(default_factory=list)
     catalogs: list[dict[str, object]] = field(default_factory=list)
+    overlays: list[dict[str, object]] = field(default_factory=list)
     workers: list[_FakeWorker] = field(default_factory=list)
     built: list[dict[str, object]] = field(default_factory=list)
     collections: list[_RecordingCollection] = field(default_factory=list)
@@ -389,6 +427,14 @@ def _wire(
     ``currents`` before they can have two distinct catalogs, which is the
     real relationship: what a source contributes follows from the commit it
     is activated at.
+
+    ``_session_capability_overlays`` is faked alongside the git seams rather
+    than left real, because it is one too: it puts a checkout directory on
+    ``sys.path`` and imports out of it, in this process, for the rest of the
+    run. Faking it records the *base* create_stack chose, which is this
+    file's share of the overlay arm — what a loader then does with a base
+    belongs to ``tests/test_runtime.py``, where the real function runs
+    against a real tree.
     """
     if current is not None and currents is not None:
         raise TypeError(
@@ -417,12 +463,12 @@ def _wire(
         return made
 
     def load_harness_catalog(
-        root: str | Path,
+        tree: str | Path,
         sha: str,
         supported_capabilities: object,
     ) -> HarnessCatalog:
         wiring.catalogs.append(
-            {"root": Path(root), "sha": sha, "capabilities": supported_capabilities}
+            {"tree": Path(tree), "sha": sha, "capabilities": supported_capabilities}
         )
         if catalogs is None:
             return resolved_catalog
@@ -432,6 +478,12 @@ def _wire(
                 f"never told about {sha!r}; it names {sorted(catalogs)}"
             )
         return catalogs[sha]
+
+    def session_capability_overlays(
+        seeds: Sequence[ComponentSpec], base: Path
+    ) -> tuple[object, ...]:
+        wiring.overlays.append({"seeds": tuple(seeds), "base": base})
+        return ()
 
     def worker_provider(*, name: str, entrypoint: str, path: str | Path) -> _FakeWorker:
         made = _FakeWorker(name=name, entrypoint=entrypoint, path=path)
@@ -467,6 +519,9 @@ def _wire(
     )
     monkeypatch.setattr(harness_module, "load_harness_catalog", load_harness_catalog)
     monkeypatch.setattr(harness_module, "WorkerProvider", worker_provider)
+    monkeypatch.setattr(
+        server, "_session_capability_overlays", session_capability_overlays
+    )
     monkeypatch.setattr(server, "build_collection", build_collection)
     monkeypatch.setattr(server, "discover_providers", discover_providers)
     return wiring
@@ -1112,7 +1167,7 @@ def test_one_capability_object_reaches_bind_and_both_catalog_calls(
     assert len(wiring.catalogs) == 4
     for call in wiring.catalogs:
         assert call["capabilities"] is harness_module.SUPPORTED_CAPABILITIES
-        assert call["root"] == tree
+        assert call["tree"] == tree
         assert call["sha"] == _SHA
 
 
@@ -1172,6 +1227,32 @@ def test_worker_provider_path_is_the_import_root_directory(
     )
     create_stack(collection=CollectionIndex([]), config=_config(tmp_path))
     assert Path(wiring.workers[0].path) == tree / "providers" / "demo"
+
+
+@pytest.mark.parametrize("path", ["providers/demo/plane.py", "providers/demo"])
+def test_rooted_worker_provider_path_is_under_the_component_root(
+    tmp_path, monkeypatch, path: str
+):
+    """The sibling above, with ``component_root = "plugins/mol"`` declared.
+
+    Both path shapes land on one directory again, and it is the one under
+    the root. The tree really holds ``plugins/mol/providers/demo``, so the
+    directory row takes ``_import_root``'s is-a-directory branch off the
+    folded base rather than falling back to a parent that happens to look
+    plausible.
+    """
+    tree = _checkout(tmp_path, component_root="plugins/mol")
+    wiring = _wire(
+        monkeypatch,
+        harness=(_SOURCE,),
+        current=_SHA,
+        tree=tree,
+        catalog=_catalog(_provider_component(path=path), component_root="plugins/mol"),
+    )
+    create_stack(collection=CollectionIndex([]), config=_config(tmp_path))
+    assert (
+        Path(wiring.workers[0].path) == tree / "plugins" / "mol" / "providers" / "demo"
+    )
 
 
 async def test_checkout_wins_the_name_and_entry_point_only_planes_pass_through(
@@ -1273,6 +1354,50 @@ async def test_the_folded_name_set_excludes_a_plane_the_second_source_named(
     assert "demo_worker" in names
     assert "demo_intree" not in names
     assert "other_intree" in names
+
+
+# -- overlay seed base ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("component_root", "segments"),
+    [("", ()), ("plugins/mol", ("plugins", "mol"))],
+)
+def test_overlay_seeds_are_handed_the_folded_base_not_the_checkout_tree(
+    tmp_path, monkeypatch, component_root: str, segments: tuple[str, ...]
+):
+    """``create_stack`` hands the overlay loader ``root_for``'s answer.
+
+    This is the overlay half of the failure ``component_root`` exists to
+    make unreachable: the key applied in the provider arm and forgotten in
+    this one is half a harness, and half a harness is harder to diagnose
+    than one that resolves nothing, because the install looks like it works.
+    The provider half is asserted two sections above, and again over a real
+    tree in ``tests/test_harness.py``.
+
+    The *recorded argument* is the assertion because the subject is
+    ``create_stack``'s composition — which directory it chose. What the
+    loader does with a base is the loader's contract, pinned in
+    ``tests/test_runtime.py`` against a real tree through the real function.
+
+    The rootless case is an equality against the tree object itself, not a
+    prefix check, so a base carrying a ``.`` component or a trailing
+    separator fails it: today's rootless installs must resolve byte-identical
+    paths.
+    """
+    tree = _checkout(tmp_path, component_root=component_root)
+    wiring = _wire(
+        monkeypatch,
+        harness=(_SOURCE,),
+        current=_SHA,
+        tree=tree,
+        catalog=_catalog(_overlay_component(), component_root=component_root),
+    )
+    create_stack(config=_config(tmp_path))
+    assert [call["base"] for call in wiring.overlays] == [tree.joinpath(*segments)]
+    # The seed really reached the arm, so the base above was chosen with an
+    # overlay row in hand rather than for an empty spec list.
+    assert [spec.id for spec in wiring.overlays[0]["seeds"]] == ["overlay.demo"]
 
 
 # -- lifecycle --------------------------------------------------------------

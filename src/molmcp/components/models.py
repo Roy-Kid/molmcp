@@ -20,11 +20,24 @@ from types import MappingProxyType
 class CatalogError(ValueError):
     """Raised when a harness catalog cannot be accepted.
 
-    Both the language gate (unknown key, unknown kind, token not in
+    Three raisers, and the third is worth naming because it is the first
+    outside this package and outside a catalog object. Inside it: the
+    language gate (unknown key, unknown kind, token not in
     ``ALLOWED_REQUIRES``, invalid SHA, and so on) and the eligibility
     check (a grammatically valid ``requires`` token the caller cannot
-    honor) raise this type. Eligibility failures are the ones whose
-    message contains ``ineligible``.
+    honor). Eligibility failures are the ones whose message contains
+    ``ineligible``.
+
+    Outside it: :class:`molmcp.harness.ComponentFold`, which folds several
+    catalogs into one served set. Its ``__post_init__`` raises this type
+    when its checkouts and their ``component_root`` strings disagree, and
+    its ``root_for`` raises it for a source the fold was not built from,
+    with ``unknown-source`` in the message — the same register
+    :meth:`HarnessCatalog.get` and :meth:`HarnessCatalog.get_bundle` use.
+    So the type does not mean "one catalog file was rejected"; it means a
+    harness catalog, or something assembled directly out of several of
+    them, cannot be accepted. A second error family for that one message
+    was considered and refused: the register genuinely matches.
     """
 
 

@@ -34,6 +34,7 @@ from pathlib import Path
 
 from .components import (
     Activation,
+    CatalogError,
     ComponentKind,
     ComponentSpec,
     GitHubTransport,
@@ -93,7 +94,16 @@ class Checkout:
         source: Name of the harness source this commit was activated for.
             It rides here, beside ``tree``, so that ``source -> tree`` has
             exactly one owner: :class:`ComponentFold` carries these objects
-            rather than a second mapping of the same fact.
+            rather than a second mapping of the same fact. That ownership
+            survives :attr:`ComponentFold.component_roots`, and the
+            distinguishing fact is what that field maps to: it is
+            ``source -> str``, not ``source -> tree``. It records the
+            ``component_root`` string a catalog authored — a fact no
+            ``Checkout`` holds, because :func:`activated_checkouts` reads
+            no catalog — and :meth:`ComponentFold.root_for` joins it onto
+            the tree found *here*. The tree is therefore still owned once,
+            and a base built against some other source's tree is not a
+            state that type can hold.
     """
 
     sha: str
@@ -137,18 +147,129 @@ class ComponentFold:
     other first-wins folds (``discovery/overlay/catalog.py``,
     ``discovery/overlay/conventions.py``) drop losers without recording them.
 
+    ``__post_init__`` refuses any fold whose two collections disagree: source
+    names are unique on **both** sides and exactly equal across them. Each
+    clause earns its keep. Set equality alone admits one source named twice
+    in ``component_roots``, and :meth:`root_for`'s scan would then answer
+    with whichever entry it met first while a second entry said something
+    else. Set equality *and* roots-side uniqueness together still admit two
+    checkouts sharing one source name with different trees, where the scan
+    answers with the first tree and the other source's components resolve
+    nowhere. :func:`activated_checkouts` already refuses a duplicate source
+    name, but this type is directly constructible and cannot rely on its own
+    caller. The guard owns the **correspondence** between the two
+    collections, which nothing else owns, and deliberately does *not*
+    re-validate the ``component_root`` string: that **value**'s one home is
+    :class:`~molmcp.components.HarnessCatalog`'s own ``__post_init__``, and a
+    second guard here would be a second owner of one rule.
+
     Attributes:
         checkouts: The checkouts this fold was built from, in source order.
             The fold carries the objects themselves rather than a parallel
             ``source -> tree`` map, so a consumer that needs a kept spec's
             tree has one place to find it and cannot hold two arguments out
             of sync.
+        component_roots: Each source's ``component_root`` exactly as its
+            catalog authored it — the raw string, in source order, ``""``
+            for a catalog declaring no key. This is not the parallel map the
+            entry above forbids, and both halves of why are worth stating.
+            The **string** is the fold's own datum: no ``Checkout`` holds
+            it, because :func:`activated_checkouts` reads no catalog, and
+            giving ``Checkout`` the field would force it to. The **join** is
+            what would have been the duplicate — ``tree`` already lives on
+            the checkouts, so storing ``tree / component_root`` would be a
+            second copy of a fact those objects already hold, and the
+            invariant above would then exist only to police the agreement
+            between two copies of one fact. With the string stored and the
+            join performed inside :meth:`root_for` against *that source's
+            own* :attr:`Checkout.tree`, "the base belongs to the right tree"
+            is a theorem rather than an assertion: there is no other tree
+            :meth:`root_for` can reach.
         kept: The surviving components — source order outside, catalog order
             within a source.
+
+    Raises:
+        CatalogError: ``checkouts`` and ``component_roots`` disagree — a
+            source name repeats on either side, or the two sets of names are
+            not equal.
     """
 
     checkouts: tuple[Checkout, ...]
+    component_roots: tuple[tuple[str, str], ...]
     kept: tuple[SourcedComponent, ...]
+
+    def __post_init__(self) -> None:
+        """Refuse a fold that cannot answer exactly one base per source.
+
+        Raises:
+            CatalogError: A source name repeats among ``checkouts``, or
+                repeats among ``component_roots``, or the two collections
+                do not name the same set of sources.
+        """
+        checked = tuple(checkout.source for checkout in self.checkouts)
+        rooted = tuple(source for source, _ in self.component_roots)
+        if len(set(checked)) != len(checked):
+            raise CatalogError(
+                f"a component fold cannot hold two checkouts of one harness "
+                f"source: {sorted(checked)!r}. `root_for` would answer with "
+                f"the first one's tree and the second's components would "
+                f"resolve nowhere."
+            )
+        if len(set(rooted)) != len(rooted):
+            raise CatalogError(
+                f"a component fold cannot hold two component roots for one "
+                f"harness source: {sorted(rooted)!r}. `root_for` would answer "
+                f"with the first one and the second would be silently unused."
+            )
+        if set(checked) != set(rooted):
+            raise CatalogError(
+                f"a component fold must hold exactly one component root per "
+                f"checkout: its checkouts name {sorted(checked)!r} and its "
+                f"component roots name {sorted(rooted)!r}."
+            )
+
+    def root_for(self, source: str) -> Path:
+        """Return the directory *source*'s component paths resolve under.
+
+        This is the **one** place a checkout tree and a catalog's
+        ``component_root`` are joined, and it joins them against that
+        source's own :attr:`Checkout.tree` — so a base belonging to another
+        source's tree is not reachable rather than merely untested. A
+        catalog declaring no ``component_root`` answers the tree object
+        itself, not another spelling of it: no ``.`` component, no trailing
+        separator, so an install that has no key today resolves
+        byte-identical paths.
+
+        A linear scan, symmetric with :meth:`specs_from` — but deliberately
+        **not** symmetric with its tolerance of an unknown source. There is
+        no empty ``Path`` a caller could stand in with, and a wrong base is
+        the half-applied failure this whole design exists to prevent.
+
+        Args:
+            source: Harness source name, as the ``harness`` settings list
+                spells it.
+
+        Returns:
+            ``tree / component_root`` for a rooted source, and exactly
+            ``tree`` for a rootless one.
+
+        Raises:
+            CatalogError: This fold was not built from that source. The
+                message contains ``unknown-source`` and names it with
+                ``repr`` — the register :meth:`HarnessCatalog.get
+                <molmcp.components.HarnessCatalog.get>` and ``get_bundle``
+                already use.
+        """
+        for name, component_root in self.component_roots:
+            if name != source:
+                continue
+            for checkout in self.checkouts:
+                if checkout.source != source:
+                    continue
+                if not component_root:
+                    return checkout.tree
+                return checkout.tree / component_root
+        raise CatalogError(f"unknown-source: {source!r}")
 
     @property
     def names(self) -> frozenset[str]:
@@ -387,21 +508,30 @@ def fold_components(
             catalog is passed over.
 
     Returns:
-        The fold: the checkouts it was built from, and the components that
-        survived. No checkout at all is not an error — it is the empty fold.
+        The fold: the checkouts it was built from, each source's
+        ``component_root`` as its catalog authored it, and the components
+        that survived. No checkout at all is not an error — it is the empty
+        fold. The roots are recorded in the same loop iteration that reads
+        the catalog, because that iteration is the only place both the
+        source name and its catalog are in hand at once.
 
     Raises:
         CatalogError: A catalog is malformed, or requires a capability this
             runtime does not support. One bad catalog fails the serve rather
             than being skipped in favour of its neighbours, for the same
             reason an incomplete source is refused: carrying on would serve
-            code the operator did not select.
+            code the operator did not select. Also when *checkouts* names one
+            source twice, which :class:`ComponentFold` refuses —
+            :func:`activated_checkouts` cannot produce that, but this
+            function is directly callable with a hand-built sequence.
     """
     kept: dict[str, SourcedComponent] = {}
+    component_roots: list[tuple[str, str]] = []
     for checkout in checkouts:
         catalog = load_harness_catalog(
             checkout.tree, checkout.sha, SUPPORTED_CAPABILITIES
         )
+        component_roots.append((checkout.source, catalog.component_root))
         for spec in catalog.components:
             if spec.kind is not kind:
                 continue
@@ -420,7 +550,11 @@ def fold_components(
                 winner.source,
                 winner.source,
             )
-    return ComponentFold(checkouts=tuple(checkouts), kept=tuple(kept.values()))
+    return ComponentFold(
+        checkouts=tuple(checkouts),
+        component_roots=tuple(component_roots),
+        kept=tuple(kept.values()),
+    )
 
 
 def checkout_planes(fold: ComponentFold) -> list[Provider]:
@@ -432,12 +566,13 @@ def checkout_planes(fold: ComponentFold) -> list[Provider]:
     (``provider.demo``) is a catalog key, not a plane id; mounting under it
     would namespace the plane's tools as ``provider.demo_open``.
 
-    The fold is the *only* argument, deliberately. Every spec needs the tree
-    it came from to resolve its import root, and the fold already carries the
-    checkouts it was built from — so there is nothing for a caller to keep in
-    sync, and a fold built from some other checkout list cannot be paired with
-    a stale one here. Only kept components are built, which is what stops two
-    sources' ``provider.demo`` from mounting twice under one namespace.
+    The fold is the *only* argument, deliberately. Every spec needs the base
+    its source resolves under to find its import root, and the fold answers
+    that itself through :meth:`ComponentFold.root_for` — so there is nothing
+    for a caller to keep in sync, and a fold built from some other checkout
+    list cannot be paired with a stale one here. Only kept components are
+    built, which is what stops two sources' ``provider.demo`` from mounting
+    twice under one namespace.
 
     Args:
         fold: A :data:`~molmcp.components.ComponentKind.PROVIDER` fold. Any
@@ -456,14 +591,14 @@ def checkout_planes(fold: ComponentFold) -> list[Provider]:
             # checkout is imported in the child process, never in this one.
             name=spec.name,
             entrypoint=str(spec.entrypoint),
-            path=_import_root(checkout.tree, spec.path),
+            path=_import_root(fold.root_for(checkout.source), spec.path),
         )
         for checkout in fold.checkouts
         for spec in fold.specs_from(checkout.source)
     ]
 
 
-def _import_root(tree: Path, path: str) -> Path:
+def _import_root(base: Path, path: str) -> Path:
     """Resolve a component path to the directory its module is imported from.
 
     A component may point at either the module file (``providers/demo/plane.py``)
@@ -481,11 +616,19 @@ def _import_root(tree: Path, path: str) -> Path:
     difference is the first thing to check.
 
     Args:
-        tree: Root of the activated checkout.
-        path: The component's tree-relative POSIX path.
+        base: The directory this source's component paths resolve under —
+            :meth:`ComponentFold.root_for`'s answer. Deliberately not named
+            ``tree``: :attr:`Checkout.tree` means "where ``harness.toml``
+            sits" in this same module, and the two stop being one directory
+            the moment a catalog declares a ``component_root``. This
+            function is not told which case it is in and does not need to
+            be; it takes a base directory and knows nothing about where it
+            came from.
+        path: The component's POSIX path, exactly as its catalog authored
+            it, resolved under *base*.
 
     Returns:
         The directory to import the component from.
     """
-    candidate = tree / path
+    candidate = base / path
     return candidate if candidate.is_dir() else candidate.parent

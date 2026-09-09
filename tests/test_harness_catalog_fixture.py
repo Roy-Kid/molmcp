@@ -69,7 +69,7 @@ _CAPABILITIES = frozenset({"provider-sdk", "harness-catalog"})
 
 #: The keys the concept page names, spelled out again here so that changing
 #: one side fails instead of silently agreeing with itself.
-_TOP_LEVEL_KEYS = frozenset({"requires", "component"})
+_TOP_LEVEL_KEYS = frozenset({"requires", "component", "component_root"})
 _COMPONENT_KEYS = frozenset({"kind", "name", "path", "entrypoint"})
 _BUNDLE_KEYS = frozenset({"kind", "name", "members", "requires"})
 _REQUIRED_BUNDLES = frozenset({"daily", "dev"})

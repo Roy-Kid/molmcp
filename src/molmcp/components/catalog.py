@@ -21,7 +21,7 @@ from .models import (
     ComponentSpec,
 )
 
-_TOP_LEVEL_KEYS = frozenset({"requires", "component"})
+_TOP_LEVEL_KEYS = frozenset({"requires", "component", "component_root"})
 _COMPONENT_KEYS = frozenset({"kind", "name", "path", "entrypoint"})
 _BUNDLE_KEYS = frozenset({"kind", "name", "members", "requires"})
 _REQUIRED_BUNDLES = frozenset({"daily", "dev"})
@@ -64,19 +64,27 @@ class HarnessCatalog:
         components: Leaf :class:`ComponentSpec` rows (no bundles).
         bundles: :class:`BundleSpec` rows (must include ``daily`` and
             ``dev``).
+        component_root: Tree-relative POSIX directory every component
+            ``path`` in this catalog resolves under, or ``""`` for the
+            tree itself. Declared last because the four fields above
+            carry no defaults. Component paths are carried beside it and
+            are never rewritten to include it.
 
     Raises:
         CatalogError: Invalid SHA, unknown requires token, missing
-            ``daily``/``dev``, duplicate id or bundle name, or a bundle
-            member id that is not in ``components``.
+            ``daily``/``dev``, duplicate id or bundle name, a bundle
+            member id that is not in ``components``, or a
+            ``component_root`` that could escape the tree.
     """
 
     sha: str
     requires: tuple[str, ...]
     components: tuple[ComponentSpec, ...]
     bundles: tuple[BundleSpec, ...]
+    component_root: str = ""
 
     def __post_init__(self) -> None:
+        _validate_component_root(self.component_root)
         if SHA_PATTERN.fullmatch(self.sha) is None:
             raise CatalogError(f"invalid sha: {self.sha!r}")
         for token in self.requires:
@@ -166,11 +174,11 @@ class HarnessCatalog:
 
 
 def load_harness_catalog(
-    root: str | Path,
+    tree: str | Path,
     sha: str,
     supported_capabilities: frozenset[str],
 ) -> HarnessCatalog:
-    """Load ``{root}/harness.toml`` through the language gate, then eligibility.
+    """Load ``{tree}/harness.toml`` through the language gate, then eligibility.
 
     ``harness.toml`` is the TOML catalog at the checkout root. ``sha`` is
     the caller's 40-character lowercase git commit SHA (Secure Hash
@@ -196,8 +204,19 @@ def load_harness_catalog(
     This function does not import entrypoints, does not check that
     component paths exist on disk, and does not talk to git.
 
+    The optional ``component_root`` key is parsed here and carried onto
+    the catalog unchanged; it never moves ``harness.toml`` itself, which
+    always sits directly in ``tree``. This is also the only gate that can
+    see the key's *presence*, so it additionally refuses
+    ``component_root = ""``: :meth:`HarnessCatalog.__post_init__`
+    receives ``""`` from a defaulted field and from a written one alike
+    and cannot tell them apart.
+
     Args:
-        root: Directory that contains ``harness.toml``.
+        tree: Directory that contains ``harness.toml``. Named for
+            ``Checkout.tree``, which is what every caller passes; the
+            catalog's own ``component_root`` is a different directory and
+            is never spelled ``root`` here.
         sha: 40-character lowercase hex git commit SHA.
         supported_capabilities: Capability tokens this process can honor.
             Required (no default).
@@ -208,12 +227,13 @@ def load_harness_catalog(
 
     Raises:
         CatalogError: Missing file, invalid TOML, unknown field or kind,
-            language-gate failure, or ineligible ``requires`` token
-            (message contains ``ineligible``).
+            language-gate failure, an empty ``component_root`` written
+            out, or an ineligible ``requires`` token (message contains
+            ``ineligible``).
         TypeError: If ``supported_capabilities`` is omitted.
     """
 
-    path = Path(root) / "harness.toml"
+    path = Path(tree) / "harness.toml"
     if not path.is_file():
         raise CatalogError(f"missing harness.toml at {path}")
     try:
@@ -223,12 +243,18 @@ def load_harness_catalog(
     table = _as_table(parsed, "harness.toml")
     _reject_unknown(table, _TOP_LEVEL_KEYS, "harness.toml")
     requires = _require_str_tuple(table.get("requires", []), "requires")
+    component_root = ""
+    if "component_root" in table:
+        component_root = _require_string(table["component_root"], "component_root")
+        if not component_root:
+            raise CatalogError("component_root must not be empty when present")
     components, bundles = _parse_component_rows(table.get("component", []))
     catalog = HarnessCatalog(
         sha=sha,
         requires=requires,
         components=components,
         bundles=bundles,
+        component_root=component_root,
     )
     _assert_eligible(catalog, supported_capabilities)
     return catalog
@@ -289,6 +315,64 @@ def _parse_component_row(row: dict[str, object], kind_value: str) -> ComponentSp
         path=path,
         entrypoint=entrypoint,
     )
+
+
+def _validate_component_root(value: str) -> None:
+    r"""Refuse a ``component_root`` that could escape the tree it joins onto.
+
+    ``component_root`` is always the *first* component joined onto a
+    checkout tree, which is what makes each clause below load-bearing:
+
+    * A backslash is not POSIX.
+    * Any ``:`` at all. ``"D:evil"`` carries no ``..``, holds no
+      backslash, and ``Path("D:evil").is_absolute()`` is ``False`` on
+      POSIX -- yet ``PureWindowsPath("C:/store/tree") / "D:evil"`` is
+      ``WindowsPath("D:evil")``: a drive on the first joined component
+      resets the anchor and discards the base. CI runs ``windows-latest``.
+    * Absolute, spelled as **two** clauses.
+      ``PureWindowsPath("/plugins").is_absolute()`` is ``False``, so
+      ``is_absolute()`` alone misses ``/plugins`` -- while
+      ``PureWindowsPath("C:/store/tree") / "/plugins"`` is
+      ``WindowsPath("C:/plugins")``. This is the same pair
+      ``_validate_component_path`` already carries, for the same reason.
+    * A ``".."`` **or ``"."``** segment, found by splitting on ``"/"``
+      rather than reading ``PurePath.parts``, which silently drops ``.``
+      and collapses ``//`` and would therefore miss both. Empty segments
+      are deliberately allowed: ``"plugins/mol/"`` and ``"plugins//mol"``
+      both collapse to the same directory and escape nothing.
+
+    **Path separators are deliberately NOT refused.** ``"plugins/mol"``
+    is two segments and must stay legal -- that is the entire point of
+    the key, and the layout it exists to support.
+    ``ImmutableGitStore._sha_dir`` and ``harness.pointer_path`` refuse
+    separators because a SHA and a source name are single segments; this
+    is the opposite case, so restoring that check here would break the
+    only layout ``component_root`` was added for.
+
+    ``""`` is legal: it means "the tree itself", and at construction time
+    a defaulted ``""`` and a written ``""`` are the same string. Refusing
+    the key *written* empty belongs to :func:`load_harness_catalog`, the
+    only gate that can still see presence.
+
+    Args:
+        value: The catalog's ``component_root``, as authored.
+
+    Raises:
+        CatalogError: The value could escape the tree. The message
+            carries ``value`` in ``repr`` form.
+    """
+
+    if "\\" in value:
+        raise CatalogError(f"component_root must be POSIX (no backslash): {value!r}")
+    if ":" in value:
+        raise CatalogError(f"component_root must not contain ':': {value!r}")
+    if Path(value).is_absolute() or value.startswith("/"):
+        raise CatalogError(f"component_root must be relative: {value!r}")
+    segments = value.split("/")
+    if ".." in segments or "." in segments:
+        raise CatalogError(
+            f"component_root must not contain '.' or '..' segments: {value!r}"
+        )
 
 
 def _assert_eligible(

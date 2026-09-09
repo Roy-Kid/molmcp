@@ -326,10 +326,14 @@ def create_stack(
             ``CatalogError`` and ``OverlayLoadError``.
         CatalogError: A checkout's ``harness.toml`` failed the catalog
             grammar, or asks for a capability token this runtime does not
-            implement. Raised out of either arm's fold — see
-            :func:`~molmcp.components.load_harness_catalog`. One bad catalog
-            fails the serve rather than being skipped in favour of its
-            neighbours.
+            implement — see :func:`~molmcp.components.load_harness_catalog`.
+            The fold raises it too, and not only about a file: a
+            :class:`~molmcp.harness.ComponentFold` whose checkouts and
+            ``component_root`` strings disagree cannot be built, and
+            :meth:`~molmcp.harness.ComponentFold.root_for` refuses a source
+            the fold was never given rather than answering with some other
+            source's base. Raised out of either arm. One bad catalog fails
+            the serve rather than being skipped in favour of its neighbours.
         OverlayLoadError: A checkout overlay component's factory returned
             something that is not a capability overlay — see
             ``molmcp.runtime._session_capability_overlays``.
@@ -358,15 +362,20 @@ def create_stack(
     extras: tuple[object, ...] = ()
     if build_overlays and checkouts:
         # ``_session_capability_overlays`` resolves each seed's import root
-        # under one tree, so N checkouts is N calls concatenated in source
+        # under one base, so N checkouts is N calls concatenated in source
         # order — not one call over a flattened spec list, which would resolve
-        # the second source's seeds under the first source's tree.
+        # the second source's seeds under the first source's base. The base is
+        # the fold's answer rather than the checkout tree: a catalog may
+        # declare a ``component_root``, and the provider arm asks the same
+        # question of the same object, so neither arm can be the one that
+        # forgot.
         overlay_fold = fold_components(checkouts, ComponentKind.OVERLAY)
         extras = tuple(
             overlay
             for checkout in overlay_fold.checkouts
             for overlay in _session_capability_overlays(
-                overlay_fold.specs_from(checkout.source), checkout.tree
+                overlay_fold.specs_from(checkout.source),
+                overlay_fold.root_for(checkout.source),
             )
         )
 

@@ -24,6 +24,12 @@
 # grammar error even for a process that would happily support it.
 requires = ["provider-sdk", "harness-catalog"]
 
+# Where this catalog's component paths begin, relative to the checkout root.
+# Optional; absent means the checkout root itself, which is what a repository
+# purpose-built as a catalog uses. A repository that carries its components
+# under a subdirectory names it here so the paths below stay canonical.
+component_root = "harness"
+
 # ---------------------------------------------------------------------------
 # Components — one installable piece each. `id` is not written here; it is
 # derived as "<kind>.<name>", which is why two rows may not share a kind and
