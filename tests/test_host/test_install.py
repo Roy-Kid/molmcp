@@ -209,6 +209,20 @@ class TestMaterializeDaily:
         assert written == ()
         assert not skills.exists() or [path.name for path in skills.iterdir()] == []
 
+    def test_the_directory_route_still_takes_a_host_and_a_source(self) -> None:
+        """Installing from an activated checkout *adds* a route, not replaces.
+
+        ``molmcp.host.place`` places catalog-declared components resolved out
+        of a commit tree. That is a second way in, beside this one. A
+        ``--source DIRECTORY`` an operator already scripts must keep working
+        unchanged, so this primitive keeps taking a directory and must not be
+        rewritten to take component descriptions instead.
+        """
+        parameters = inspect.signature(materialize_daily).parameters
+
+        assert list(parameters) == ["host", "source"]
+        assert parameters["source"].default is inspect.Parameter.empty
+
 
 class TestWriteAdapter:
     """A stable pointer file — byte-identical everywhere, forever."""

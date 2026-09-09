@@ -90,6 +90,13 @@ _MERGED_LISTS = ("excludes", "knowledgeScope", "discoverInclude", "discoverExclu
 _OBJECT_LISTS = ("harness",)
 
 
+#: The GitHub-coordinate fields of one harness source: the origin ``path`` is
+#: the alternative to, and the only fields the opaque-token rule applies to.
+#: Named here rather than derived from the field list because "every field that
+#: is neither ``name`` nor ``path``" would silently enroll the sixth field.
+_HARNESS_COORDINATES = ("owner", "repo", "ref")
+
+
 @dataclass(frozen=True, slots=True)
 class HarnessSource:
     """One named harness repository this install may serve components from.
@@ -114,7 +121,21 @@ class HarnessSource:
     ``owner/repo@ref`` parser out of this module; the one that exists lives
     in ``discovery/source/github.py``. Values are rejected, never rewritten.
 
-    There are four fields and no more. A cache location is ``cacheDir`` at
+    An entry names **one** origin. ``owner``/``repo``/``ref`` name a GitHub
+    coordinate; ``path`` names a checkout already on disk, which is how an
+    operator serves a harness they are still writing and the only way to
+    name one before it is published anywhere. Both at once is refused rather
+    than ranked: a source carrying a coordinate *and* a path has no answer
+    to "where does this come from", and picking a winner would make the
+    answer depend on which branch of the fetcher ran first.
+
+    ``path`` is exempt from the opaque-token rule — a filesystem path is
+    made of ``/``, and ``@`` is legal in a directory name — but from that
+    clause only. Whitespace and a backslash stay refused: a settings file is
+    not a shell, nothing here is ever handed to one, and a value that would
+    need quoting to survive is a value that was mistyped.
+
+    There are five fields and no more. A cache location is ``cacheDir`` at
     the top level, and a credential belongs in the environment rather than a
     settings file that can be committed.
 
@@ -125,16 +146,24 @@ class HarnessSource:
         ref: Branch or tag a commit is resolved from — not the commit being
             served, which this entry's own activation pointer under the cache
             directory names. ``""`` while unwritten.
+        path: Filesystem path of a checkout to serve from instead of a
+            coordinate; ``""`` on a remote or half-authored entry. Declared
+            last so the coordinates keep the positions they have always had.
+            Nothing here reads the filesystem: whether the path exists is a
+            fetch-time question, the way a coordinate's existence is.
 
     Raises:
         ValueError: If a field is not a string, carries whitespace, is an
-            empty ``name``, or is a coordinate holding ``/`` or ``@``.
+            empty ``name``, is a coordinate holding ``/`` or ``@``, is a
+            ``path`` holding a backslash, or is a ``path`` sitting beside a
+            coordinate.
     """
 
     name: str
     owner: str = ""
     repo: str = ""
     ref: str = ""
+    path: str = ""
 
     def __post_init__(self) -> None:
         for entry_field in fields(self):
@@ -152,11 +181,23 @@ class HarnessSource:
             if entry_field.name == "name":
                 if not value:
                     raise ValueError("a harness source must have a non-empty name")
+            elif entry_field.name == "path":
+                if "\\" in value:
+                    raise ValueError(
+                        f"harness source path must not contain a backslash: {value!r}"
+                    )
             elif "/" in value or "@" in value:
                 raise ValueError(
                     f"harness source {entry_field.name} must be an opaque token "
                     f"with no '/' or '@': {value!r}"
                 )
+        coordinates = [name for name in _HARNESS_COORDINATES if getattr(self, name)]
+        if self.path and coordinates:
+            raise ValueError(
+                f"a harness source names one origin, but path {self.path!r} "
+                f"sits beside {', '.join(coordinates)}: it is either a "
+                f"checkout on disk or a GitHub coordinate, never both"
+            )
 
 
 #: Keys one ``harness`` entry may carry, derived from the dataclass rather than
@@ -399,21 +440,33 @@ def set_harness_source(
     owner: str | None = None,
     repo: str | None = None,
     ref: str | None = None,
+    source_path: str | None = None,
 ) -> dict[str, Any]:
     """Upsert one ``harness`` entry, addressed by its ``name``.
 
-    A coordinate passed ``None`` is left as it was on an entry that already
+    A field passed ``None`` is left as it was on an entry that already
     exists and takes the :class:`HarnessSource` default on one that does not,
-    so no coordinate is ever set to a value nobody typed. A ``name`` not
+    so no field is ever set to a value nobody typed. A ``name`` not
     already configured is appended **last**: authoring a source never changes
     which of the already-configured ones wins.
+
+    ``source_path`` writes :attr:`HarnessSource.path`, and is spelled
+    differently on purpose: ``path`` is already this function's first
+    positional parameter — the settings file being edited — and two things
+    called ``path`` in one signature is the shape this chain has had to
+    unwind before. The positional keeps its name because every sibling verb
+    in this module opens with the same one; the new keyword takes the
+    qualified spelling.
 
     Two orderings are the contract. The arguments are validated by
     constructing a :class:`HarnessSource` *before* :func:`_resolve`, the way
     :func:`set_value` refuses ahead of it, so a refused call leaves no file
     behind at all. The merged entry is then constructed a second time, after
     the read and still before the write, which is what leaves the dataclass —
-    never this function — deciding whether the result is legal.
+    never this function — deciding whether the result is legal. The
+    one-origin rule rides on that second construction: naming a coordinate on
+    an entry already carrying a path is refused by the type, with the file
+    left as it was.
 
     Args:
         path: The settings file to edit; created if it does not exist.
@@ -421,6 +474,9 @@ def set_harness_source(
         owner: GitHub account or organization, or ``None`` to leave it as is.
         repo: GitHub repository name, or ``None`` to leave it as is.
         ref: Branch or tag, or ``None`` to leave it as is.
+        source_path: Filesystem path of a checkout to serve this source
+            from — the entry's ``path`` field — or ``None`` to leave it as
+            is. Not the file being edited; that is the positional ``path``.
 
     Returns:
         The whole file as written.
@@ -436,6 +492,7 @@ def set_harness_source(
         "owner": owner,
         "repo": repo,
         "ref": ref,
+        "path": source_path,
     }
     given = {
         field_name: value
@@ -751,22 +808,34 @@ def _harness_entry(values: dict[str, str]) -> dict[str, str]:
     only the address differs, since a verb knows a name where a file knows a
     position.
 
+    An empty ``path`` is left out of the written entry, and it is the one
+    field that is: the empty coordinates are the half-authored model's own
+    invitation to fill them in later, while an empty ``path`` beside them
+    would advertise a slot that, once filled, makes the entry illegal. A
+    ``path`` that was actually given is written like any other field, and
+    :meth:`Settings.to_dict` still reports all five — that is a report of
+    resolved settings, not a file anyone edits by hand.
+
     Args:
         values: The fields to construct with; an omitted one takes the
             dataclass default rather than being invented here.
 
     Returns:
-        The entry as a plain dict carrying all four keys.
+        The entry as a plain dict: ``name`` and the three coordinates
+        always, ``path`` only when this source names one.
 
     Raises:
         SettingsError: If :class:`HarnessSource` refuses ``values``.
     """
     try:
-        return asdict(HarnessSource(**values))
+        entry = asdict(HarnessSource(**values))
     except ValueError as exc:
         raise SettingsError(
             f"harness source {values.get('name', '')!r}: {exc}"
         ) from exc
+    if not entry["path"]:
+        del entry["path"]
+    return entry
 
 
 def _harness_sources(entries: list[dict[str, str]]) -> tuple[HarnessSource, ...]:

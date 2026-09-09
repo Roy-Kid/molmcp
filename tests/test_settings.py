@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import pathlib
 
 import pytest
 
@@ -555,6 +556,20 @@ class TestHarnessSource:
     half-authored entry rather than an error. A coordinate that *is*
     written has to be an opaque token — no ``/``, no ``@``, no whitespace —
     which keeps a second ``owner/repo@ref`` parser out of the tree.
+
+    An entry names **one** origin. ``owner``/``repo``/``ref`` name a GitHub
+    coordinate; ``path`` names a checkout already on disk, which is how an
+    operator serves a harness they are still writing and the only way to
+    name one before it is published anywhere. Both at once is refused
+    rather than ranked: a source carrying a coordinate *and* a path has no
+    answer to "where does this come from", and picking a winner would make
+    the answer depend on which branch of the fetcher ran first.
+
+    ``path`` is exempt from the opaque-token rule because it is a
+    filesystem path and ``/`` is what one is made of — but only from that
+    clause. Whitespace and a backslash stay refused: a settings file is not a
+    shell, nothing here is ever handed to one, and a value that needs
+    quoting to survive is a value that was mistyped.
     """
 
     def test_a_four_field_entry_keeps_every_field_it_was_given(self):
@@ -591,6 +606,66 @@ class TestHarnessSource:
         with pytest.raises(ValueError):
             st.HarnessSource(name="mine", **{coordinate: value})
 
+    def test_a_local_source_names_a_path_and_no_coordinate(self):
+        source = st.HarnessSource(name="mine", path="/home/me/harness")
+
+        assert source.path == "/home/me/harness"
+        assert (source.owner, source.repo, source.ref) == ("", "", "")
+
+    def test_a_name_alone_is_neither_remote_nor_local(self):
+        assert st.HarnessSource(name="mine").path == ""
+
+    def test_path_is_declared_last_so_the_coordinates_keep_their_positions(self):
+        assert [f.name for f in dataclasses.fields(st.HarnessSource)] == [
+            "name",
+            "owner",
+            "repo",
+            "ref",
+            "path",
+        ]
+
+    @pytest.mark.parametrize(
+        "value",
+        ["/home/me/harness", "harness/checkouts/mine", "../harness", "~/harness"],
+    )
+    def test_a_path_may_hold_the_separator_a_coordinate_may_not(self, value):
+        assert st.HarnessSource(name="mine", path=value).path == value
+
+    @pytest.mark.parametrize(
+        "value", [" ", "/home/me/my harness", "/home/me/harness\t"]
+    )
+    def test_a_path_carrying_whitespace_is_refused(self, value):
+        with pytest.raises(ValueError):
+            st.HarnessSource(name="mine", path=value)
+
+    @pytest.mark.parametrize("value", ["C:\\harness", "/home/me\\harness"])
+    def test_a_path_carrying_a_backslash_is_refused(self, value):
+        with pytest.raises(ValueError):
+            st.HarnessSource(name="mine", path=value)
+
+    def test_a_path_that_is_not_a_string_is_refused(self):
+        with pytest.raises(ValueError):
+            st.HarnessSource(name="mine", path=pathlib.Path("/home/me/harness"))
+
+    @pytest.mark.parametrize("coordinate", ["owner", "repo", "ref"])
+    def test_naming_a_path_beside_a_coordinate_is_refused(self, coordinate):
+        with pytest.raises(ValueError) as excinfo:
+            st.HarnessSource(
+                name="mine", path="/home/me/harness", **{coordinate: "acme"}
+            )
+
+        assert "path" in str(excinfo.value)
+
+    def test_a_whole_coordinate_beside_a_path_is_refused(self):
+        with pytest.raises(ValueError):
+            st.HarnessSource(
+                name="mine",
+                owner="MolCrafts",
+                repo="harness",
+                ref="main",
+                path="/home/me/harness",
+            )
+
 
 class TestSettingsHarnessSources:
     """``harness`` as a settings key: a list of objects, and no merge channel.
@@ -611,6 +686,17 @@ class TestSettingsHarnessSources:
         assert "harness" in st._OBJECT_LISTS
 
     def test_the_entry_keys_are_derived_from_the_dataclass_fields(self):
+        assert st._HARNESS_ENTRY_KEYS == {
+            f.name for f in dataclasses.fields(st.HarnessSource)
+        }
+
+    def test_the_derived_keys_admitted_path_with_nothing_rewritten(self):
+        """The point of deriving them: a fifth field needs no second edit.
+
+        Asserted through the derivation rather than against five literals,
+        so this keeps meaning the same thing when a sixth arrives.
+        """
+        assert "path" in st._HARNESS_ENTRY_KEYS
         assert st._HARNESS_ENTRY_KEYS == {
             f.name for f in dataclasses.fields(st.HarnessSource)
         }
@@ -712,7 +798,14 @@ class TestSettingsHarnessSources:
         assert "harness" in str(excinfo.value)
         assert "list" in str(excinfo.value)
 
-    def test_to_dict_emits_a_list_of_four_key_objects(self):
+    def test_to_dict_emits_one_object_carrying_every_field(self):
+        """Every field, including the ones this entry left empty.
+
+        ``to_dict`` is ``asdict`` over the dataclass, so the emitted object
+        is the field list rather than a hand-kept subset of it — a remote
+        entry reports ``path: ""`` for the same reason a half-authored one
+        reports ``ref: ""``.
+        """
         settings = st.Settings(
             harness=(
                 st.HarnessSource(
@@ -727,8 +820,89 @@ class TestSettingsHarnessSources:
                 "owner": "molcrafts",
                 "repo": "harness",
                 "ref": "main",
+                "path": "",
             }
         ]
+
+    def test_a_local_entry_loads_as_written(self, home, tmp_path):
+        _write(
+            st.user_settings_path(),
+            {"harness": [{"name": "mine", "path": "/opt/harness/mine"}]},
+        )
+
+        loaded = st.load_settings(tmp_path / "repo")
+
+        assert loaded.harness == (
+            st.HarnessSource(name="mine", path="/opt/harness/mine"),
+        )
+
+    def test_a_local_entry_round_trips_through_load_and_to_dict(self, home, tmp_path):
+        entry = {
+            "name": "mine",
+            "owner": "",
+            "repo": "",
+            "ref": "",
+            "path": "/opt/harness/mine",
+        }
+        _write(st.user_settings_path(), {"harness": [entry]})
+
+        loaded = st.load_settings(tmp_path / "repo")
+
+        assert loaded.to_dict()["harness"] == [entry]
+
+    def test_a_local_and_a_remote_entry_coexist_in_one_file(self, home, tmp_path):
+        _write(
+            st.user_settings_path(),
+            {
+                "harness": [
+                    {
+                        "name": "official",
+                        "owner": "MolCrafts",
+                        "repo": "harness",
+                        "ref": "main",
+                    },
+                    {"name": "mine", "path": "/opt/harness/mine"},
+                ]
+            },
+        )
+
+        loaded = st.load_settings(tmp_path / "repo")
+
+        assert [(s.name, s.owner, s.path) for s in loaded.harness] == [
+            ("official", "MolCrafts", ""),
+            ("mine", "", "/opt/harness/mine"),
+        ]
+
+    def test_an_entry_naming_both_origins_is_refused_by_its_index(self, home, tmp_path):
+        """Refused as a *rule*, not as an unknown key.
+
+        The stray-key arm above would reject this file today for a
+        different reason — ``path`` is simply not a member yet — and would
+        keep matching on ``harness[0]`` and ``path`` after it becomes one.
+        So the message has to be the dataclass's own, re-raised by index:
+        the loader restates no entry rule, and "unknown setting" here would
+        mean the two-origin rule never ran.
+        """
+        _write(
+            st.user_settings_path(),
+            {
+                "harness": [
+                    {
+                        "name": "mine",
+                        "owner": "MolCrafts",
+                        "path": "/opt/harness/mine",
+                    }
+                ]
+            },
+        )
+
+        with pytest.raises(st.SettingsError) as excinfo:
+            st.load_settings(tmp_path / "repo")
+
+        message = str(excinfo.value)
+        assert "harness[0]" in message
+        assert "path" in message
+        assert "unknown setting" not in message
 
     def test_an_install_that_names_no_source_has_an_empty_tuple(self):
         assert st.Settings().harness == ()

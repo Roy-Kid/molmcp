@@ -26,10 +26,12 @@ of the five kinds (``skill``, ``agent``, ``rule``, ``provider``,
 not a ``ComponentKind``. An *entrypoint* is a ``module:object`` string
 stored for a later import; this package never imports it.
 
-The git half is :class:`GitTransport` / :class:`GitHubTransport` plus
-:func:`extract_git_archive`. Network access is stdlib ``urllib``; the
-caller supplies an optional GitHub personal access token. This package
-never reads the environment.
+The git half is :class:`GitTransport` with its two implementations plus
+:func:`extract_git_archive`. :class:`GitHubTransport` reaches a coordinate
+over stdlib ``urllib``, with an optional GitHub personal access token the
+caller supplies; :class:`LocalGitTransport` reaches a checkout already on
+disk by running ``git`` there, and opens no socket. This package never
+reads the environment.
 
 The store half is :class:`ImmutableGitStore`. A *SHA directory* is
 ``<root>/commits/<sha>/`` with ``metadata.json`` plus ``tree/``.
@@ -48,7 +50,13 @@ the caller cannot honor.
 
 from .activate import Activation
 from .catalog import HarnessCatalog, ResolvedBundle, load_harness_catalog
-from .git import GitError, GitHubTransport, GitTransport, extract_git_archive
+from .git import (
+    GitError,
+    GitHubTransport,
+    GitTransport,
+    LocalGitTransport,
+    extract_git_archive,
+)
 from .models import (
     ALLOWED_REQUIRES,
     COMPONENT_NAME_PATTERN,
@@ -80,6 +88,7 @@ __all__ = [
     "HarnessCatalog",
     "ImmutableGitStore",
     "KIND_PATH_PREFIX",
+    "LocalGitTransport",
     "ResolvedBundle",
     "SHA_PATTERN",
     "ShaConflictError",

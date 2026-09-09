@@ -1,7 +1,7 @@
 # CLI reference
 
 ```
-molmcp [-h] [-V] {serve,init,planes,route,config,cache,gate,info,search,explore,index} ...
+molmcp [-h] [-V] {serve,init,planes,route,config,harness,cache,gate,info,search,explore,index} ...
 python -m molmcp …
 ```
 
@@ -67,6 +67,7 @@ molmcp config set sources.molpy pkg:molpy
 molmcp config add excludes vendor               # list-valued keys
 molmcp config remove sources.molpy
 molmcp config harness set --name official --owner MolCrafts --repo harness --ref main
+molmcp config harness set --name mine --path /srv/harness-checkout
 molmcp config harness remove --name official
 ```
 
@@ -88,11 +89,59 @@ so an entry can be written a coordinate at a time; whether one is complete
 enough to serve from is decided at serve time rather than here — see
 [Harness catalog](../concepts/harness.md).
 
+`--path` is the other way to spell an origin: a checkout already on disk,
+instead of those three coordinates. The two shapes are mutually exclusive, and
+the settings type refuses an entry carrying both — a source naming two origins
+has no answer to where it comes from.
+
 There are **no environment variables**. The two the code still reads are
 secrets, not configuration: the bearer token an HTTP-transport server checks
 against, and `GITHUB_TOKEN` for `github:` sources. Both name a variable in
 config rather than storing its value, which is the point — a settings file
 is the wrong place for a credential.
+
+## `molmcp harness`
+
+Fetch and activate the harness sources this install names. One subcommand
+today, `sync`, and it is the verb between a *configured* source and a served
+one: `molmcp config harness set` writes a source's origin and `molmcp serve`
+reads an activation pointer, with nothing fetching, publishing or activating in
+between until this runs.
+
+```bash
+molmcp harness sync official
+```
+
+`sync` resolves the named source's ref to a commit, publishes that commit into
+the shared store under `<cache>/harness`, and promotes it in that source's own
+pointer at `<cache>/harness.<name>.pointer` — `<cache>` being the directory the
+`cacheDir` setting names. It prints the source, the resolved SHA and either
+`activated` or `already activated`, then the published tree and the pointer
+file. What a source, a store and a pointer are is
+[Harness catalog](../concepts/harness.md).
+
+| Argument / flag | Meaning |
+|-----------------|---------|
+| `name` | Required, positional. The source to sync, spelled as the `harness` settings list names it. No default: with several sources configured, guessing one would fetch code the operator did not ask for. |
+| `--config PATH` | Explicit `molcrafts.json`. Same flag as `molmcp serve`, and it can move the cache root the store and the pointer land under. |
+
+Two syncs of one commit are one sync. The second reports `already activated`
+and leaves the pointer untouched, `previous` included — that field holds the
+SHA a rollback returns to, and re-activating the commit that is already current
+would overwrite it with the SHA already in `current`. A *new* commit does move
+the pointer, and the SHA it displaces becomes `previous`; both trees stay in
+the store, so the previous harness and the current one can both be read.
+
+What is published is a commit, never your working tree. A local source is read
+through `git archive` at the resolved SHA, so an uncommitted file in the
+checkout does not reach the published tree — which is what makes a local source
+rollbackable and comparable against another commit, rather than whatever
+happens to be on disk right now.
+
+The transport follows the source's shape and not a flag: a source with a `path`
+is read with a local git transport, one with `--owner`/`--repo`/`--ref` over
+HTTPS. There is no `--local`, because the entry already names exactly one
+origin and a flag would be a second answer to that question.
 
 ## `molmcp init <host>`
 

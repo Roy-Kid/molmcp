@@ -99,6 +99,12 @@ class TestConfigVerbs:
         ``Settings.to_dict`` is the second reader of the setting and
         ``config list`` prints what it returns, so the list-of-objects
         shape is user-visible output rather than an internal detail.
+
+        ``to_dict`` is ``asdict`` over the dataclass, so an entry reports
+        every field rather than the ones the operator typed: a remote source
+        reports the empty ``path`` of the local origin it did not name, the
+        same way a half-authored one reports an empty ``ref``. The written
+        *file* is the narrower shape, which the two write tests below pin.
         """
         monkeypatch.chdir(tmp_path)
         entry = {"name": "mine", "owner": "acme", "repo": "harness", "ref": "main"}
@@ -125,8 +131,8 @@ class TestConfigVerbs:
         assert isinstance(harness, list)
         assert len(harness) == 1
         assert isinstance(harness[0], dict)
-        assert set(harness[0]) == {"name", "owner", "repo", "ref"}
-        assert harness[0] == entry
+        assert set(harness[0]) == {"name", "owner", "repo", "ref", "path"}
+        assert harness[0] == {**entry, "path": ""}
 
     def test_get_reads_one_key(self, home, monkeypatch, tmp_path, capsys):
         monkeypatch.chdir(tmp_path)
@@ -307,6 +313,123 @@ class TestConfigHarness:
         assert _user_settings() == {
             "harness": [{"name": "mine", "owner": "", "repo": "", "ref": ""}]
         }
+
+    def test_the_path_flag_writes_a_local_entry(self, home, monkeypatch, tmp_path):
+        """`--path` is the CLI's only route to the local origin.
+
+        A checkout on disk is the one way to name a harness that is not
+        published anywhere, so it is the first thing an operator writing
+        their own harness types — and until now the flag had no test at all,
+        which left the whole local install resting on a ``dest=`` spelling
+        (``--path`` maps to ``source_path``, because ``path`` is already the
+        settings file being edited) that nothing checked.
+
+        Nothing is monkeypatched: the assertion is the file on disk, for the
+        same reason the coordinate test above gives.
+        """
+        monkeypatch.chdir(tmp_path)
+        checkout = tmp_path / "harness"
+
+        assert (
+            cli.main(
+                ["config", "harness", "set", "--name", "mine", "--path", str(checkout)]
+            )
+            == 0
+        )
+
+        assert _user_settings() == {
+            "harness": [
+                {
+                    "name": "mine",
+                    "owner": "",
+                    "repo": "",
+                    "ref": "",
+                    "path": str(checkout),
+                }
+            ]
+        }
+
+    def test_a_path_and_a_coordinate_in_one_invocation_is_refused(
+        self, home, monkeypatch, tmp_path, capsys
+    ):
+        """One entry names one origin, and argparse is not what says so.
+
+        The two flags are deliberately *not* an
+        ``add_mutually_exclusive_group``: that would only police the one
+        invocation being typed and would miss the coordinate already sitting
+        in the file. The rule lives on ``HarnessSource``, so the refusal has
+        to arrive as a ``molmcp:`` sentence rather than an argparse usage
+        line, and it has to leave nothing behind.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        assert (
+            cli.main(
+                [
+                    "config",
+                    "harness",
+                    "set",
+                    "--name",
+                    "mine",
+                    "--owner",
+                    "acme",
+                    "--path",
+                    str(tmp_path / "harness"),
+                ]
+            )
+            == 2
+        )
+
+        assert capsys.readouterr().err.startswith("molmcp:")
+        assert _user_settings() == {}
+
+    def test_a_path_added_to_an_existing_coordinate_entry_leaves_the_file_alone(
+        self, home, monkeypatch, tmp_path, capsys
+    ):
+        """The second edit is where the one-origin rule earns its keep.
+
+        An entry is authored across several invocations, so the illegal pair
+        is usually assembled rather than typed: a remote source already on
+        disk, then ``--path`` on the same name. The merged entry is the one
+        that must be refused, and the already-configured remote source must
+        survive the refusal intact.
+        """
+        monkeypatch.chdir(tmp_path)
+        cli.main(
+            [
+                "config",
+                "harness",
+                "set",
+                "--name",
+                "official",
+                "--owner",
+                "MolCrafts",
+                "--repo",
+                "harness",
+                "--ref",
+                "main",
+            ]
+        )
+        before = _user_settings()
+        capsys.readouterr()
+
+        assert (
+            cli.main(
+                [
+                    "config",
+                    "harness",
+                    "set",
+                    "--name",
+                    "official",
+                    "--path",
+                    str(tmp_path / "harness"),
+                ]
+            )
+            == 2
+        )
+
+        assert capsys.readouterr().err.startswith("molmcp:")
+        assert _user_settings() == before
 
     def test_remove_drops_the_entry_and_leaves_an_empty_list(
         self, home, monkeypatch, tmp_path

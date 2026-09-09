@@ -43,12 +43,12 @@ class HostLayout:
         adapter: Stable pointer file ``molmcp-adapter.md``.
         commands: Directory of one-line stubs, one per dev slash command
             such as ``/mol:spec``; the bodies stay under *molmcp_dev*.
-        agents: Host agents root. Recorded so this table stays the single
-            truth; no function in ``molmcp.host`` writes there, so a user's
-            own files are left alone.
-        rules: Host rules root. Recorded so this table stays the single
-            truth; no function in ``molmcp.host`` writes there, so a user's
-            own files are left alone.
+        agents: Host agents root. Only
+            :func:`~molmcp.host.place.place_components` writes there, and
+            only the ``agent`` components a catalog declares by name, so a
+            user's own files are left alone.
+        rules: Host rules root. Written on the same terms as *agents*, for
+            ``rule`` components.
         molmcp_dev: Tree that holds the full dev harness bodies once
             :func:`~molmcp.host.activate_dev` has copied them in.
     """

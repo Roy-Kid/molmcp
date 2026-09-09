@@ -15,12 +15,14 @@ from mcp.types import ToolAnnotations
 
 from .collection import CollectionIndex
 from .components import ComponentKind
-from .config import AppConfig, ConfigurationError, load_config
+from .config import AppConfig, load_config
 from .harness import (
+    HARNESS_COORDINATES,
     Checkout,
     activated_checkouts,
     checkout_planes,
     fold_components,
+    servable_sources,
 )
 from .mcp_provider import MolCraftsContextProvider
 from .middleware import (
@@ -56,15 +58,17 @@ _READ_ONLY = ToolAnnotations(
     open_world_hint=False,
 )
 
-#: The three coordinates that locate one named harness repository. An entry
-#: carries either all three or none of them; anything between is a
-#: configuration error rather than a value to guess at.
+#: The three coordinates that locate one named harness repository, under the
+#: name this module has always spelled them. It is the *same tuple object* as
+#: :data:`molmcp.harness.HARNESS_COORDINATES`, never a copy: ``molmcp harness
+#: sync`` refuses exactly the entries ``molmcp serve`` refuses, and two
+#: commands reading two spellings of one rule is how they would drift apart.
 #:
-#: This is deliberately not ``molmcp.settings._HARNESS_ENTRY_KEYS``, which
-#: also holds ``name``: that set is what a settings-file entry may *write*,
-#: this one is what a named entry must have *filled in* before it can be
-#: served from.
-_HARNESS_KEYS = ("owner", "repo", "ref")
+#: They are no longer the whole completeness rule. An entry naming a ``path``
+#: is a local origin whose coordinates are empty *by construction* — see
+#: :func:`molmcp.harness.assert_servable`, which owns the rule these keys are
+#: only the remote half of.
+_HARNESS_KEYS = HARNESS_COORDINATES
 
 
 def _create_core_plane(
@@ -547,46 +551,30 @@ def _harness_locator() -> tuple[HarnessSource, ...]:
     would hide a project's ``.molmcp/settings.json`` layer, so a source split
     across the user and project files would look incomplete and be rejected.
 
-    Every entry is checked and none is ever skipped. An entry missing a
-    coordinate is refused rather than passed over in favour of its neighbour,
-    for the same reason no coordinate is defaulted: carrying on from the next
-    entry would serve code from a repository the operator did not select.
+    Reading the file is this function's whole job; which entries are servable
+    is :func:`~molmcp.harness.servable_sources`', so that ``molmcp harness
+    sync`` can apply the identical rule to the one entry it was named. The
+    split is what keeps the two commands from drifting: an entry this refuses
+    cannot be one that verb syncs.
 
     Returns:
-        Every named source in file order, each with all three coordinates
-        filled in, or the empty tuple when no source is named — which is the
-        un-harnessed configuration, not a failure. File order is carried
-        through :func:`~molmcp.harness.activated_checkouts` into the fold, so
-        it is the operator's priority control over a component two sources
-        both declare. Only ``name`` is read on this path — it selects that
+        Every named source in file order, each naming an origin this install
+        can reach — a GitHub coordinate or a checkout on disk — or the empty
+        tuple when no source is named, which is the un-harnessed
+        configuration rather than a failure. File order is carried through
+        :func:`~molmcp.harness.activated_checkouts` into the fold, so it is
+        the operator's priority control over a component two sources both
+        declare. Only ``name`` is read past this point: it selects that
         source's activation pointer, which is where the commit to serve comes
-        from; ``owner`` / ``repo`` / ``ref`` identify the repository to
-        whatever later fetches from it, and nothing here reads their values.
+        from. The origin fields identify the repository to whatever later
+        fetches from it, and nothing downstream of here reads their values.
 
     Raises:
-        ConfigurationError: An entry sets some but not all of
-            :data:`_HARNESS_KEYS`, including an entry that sets none of them —
-            a named source with no coordinates is a half-written claim, and
-            the empty list is how a harness is left unset. The message names
-            the entry and every field it is missing, because under a list of
-            sources the entry's name is the address an operator goes to fill
-            them in. Filling them in from a default would fetch code from a
-            repository nobody named.
+        ConfigurationError: An entry names no origin this install can reach.
+            See :func:`~molmcp.harness.assert_servable` for the three shapes
+            that qualify and what each message says.
     """
-    sources = tuple(load_settings(Path.cwd()).harness)
-    for source in sources:
-        missing = [key for key in _HARNESS_KEYS if not getattr(source, key).strip()]
-        if not missing:
-            continue
-        named = ", ".join(missing)
-        raise ConfigurationError(
-            f"the harness source named {source.name!r} is incomplete: "
-            f"{named} {'is' if len(missing) == 1 else 'are'} not set. Fill "
-            f"{'it' if len(missing) == 1 else 'them'} in on that entry of the "
-            f"`harness` list in your settings file, or remove the entry to "
-            f"serve without it."
-        )
-    return sources
+    return servable_sources(load_settings(Path.cwd()).harness)
 
 
 def _resolve_provider(

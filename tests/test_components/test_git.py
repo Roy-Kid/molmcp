@@ -1,18 +1,28 @@
-"""GitHubTransport and extract_git_archive — network mocked, no DiscoveryEngine."""
+"""The two GitTransport implementations and extract_git_archive.
+
+``GitHubTransport`` is driven against a fake ``urlopen``: no socket is
+opened here. ``LocalGitTransport`` is the opposite kind of leaf — it shells
+out to ``git`` against a checkout this module builds in ``tmp_path``, so it
+is driven against a *real* repository rather than a mock. Neither reaches
+the network, and no ``DiscoveryEngine`` is involved in either.
+"""
 
 from __future__ import annotations
 
 import inspect
 import io
 import json
+import subprocess
 import tarfile
 import urllib.error
 import urllib.request
 from email.message import Message
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
+from molmcp.components import git as git_mod
 from molmcp.components.git import (
     GitError,
     GitHubTransport,
@@ -266,3 +276,330 @@ class TestExtractGitArchive:
         data = _make_tarball({"calc.py": "x = 1"})
         with pytest.raises(GitError):
             extract_git_archive(data, dest)
+
+
+_BRANCH = "dev"
+_TAG = "v1"
+_ANNOTATED_TAG = "v1-signed-off"
+_MANIFEST = '[harness]\nname = "mine"\n'
+_SKILL = "# greet\n"
+_SCRATCH = "still being edited\n"
+_IDENTITY = (
+    "-c",
+    "user.name=molmcp tests",
+    "-c",
+    "user.email=tests@molmcp.invalid",
+)
+
+
+class _Checkout(NamedTuple):
+    """A real git repository built under ``tmp_path``.
+
+    Two commits, so a ref that is not ``HEAD`` has somewhere else to point:
+    ``tagged`` carries only ``harness.toml`` and is what ``dev``, the
+    lightweight ``v1`` and the annotated ``v1-signed-off`` all name;
+    ``head`` adds ``skills/greet.md`` on ``main``. One more file —
+    ``scratch.txt`` — sits in the working tree, committed by nothing.
+    """
+
+    root: Path
+    head: str
+    tagged: str
+
+
+def _git(root: Path, *args: str) -> str:
+    """Run one git command inside ``root`` and return its stripped stdout."""
+    result = subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _init(root: Path) -> None:
+    """Create ``root`` as an empty repository on ``main`` with 40-hex SHAs."""
+    root.mkdir(parents=True, exist_ok=True)
+    _git(root, "init", "-q", "--initial-branch=main", "--object-format=sha1")
+
+
+def _commit(root: Path, message: str) -> str:
+    """Commit everything currently in ``root`` and return the new SHA."""
+    _git(root, "add", "-A")
+    _git(root, *_IDENTITY, "commit", "--no-gpg-sign", "-q", "-m", message)
+    return _git(root, "rev-parse", "HEAD")
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _tree(root: Path) -> set[str]:
+    """Every file under ``root``, as slash-separated relative paths."""
+    return {
+        item.relative_to(root).as_posix() for item in root.rglob("*") if item.is_file()
+    }
+
+
+def _extract(data: bytes, tmp_path: Path, name: str) -> Path:
+    """Extract ``data`` into a fresh directory and return the inner tree."""
+    dest = tmp_path / name
+    dest.mkdir()
+    return extract_git_archive(data, dest)
+
+
+@pytest.fixture
+def checkout(tmp_path: Path) -> _Checkout:
+    root = tmp_path / "harness"
+    _init(root)
+    _write(root / "harness.toml", _MANIFEST)
+    tagged = _commit(root, "first")
+    _git(root, "tag", _TAG)
+    _git(
+        root,
+        *_IDENTITY,
+        "-c",
+        "tag.gpgSign=false",
+        "tag",
+        "-a",
+        _ANNOTATED_TAG,
+        "-m",
+        "release one",
+    )
+    _git(root, "branch", _BRANCH)
+    _write(root / "skills" / "greet.md", _SKILL)
+    head = _commit(root, "second")
+    _write(root / "scratch.txt", _SCRATCH)
+    return _Checkout(root=root, head=head, tagged=tagged)
+
+
+class TestLocalGitTransport:
+    """A harness source that is a checkout on disk rather than a coordinate.
+
+    Same two primitives as :class:`GitHubTransport` — resolve a ref to a
+    commit SHA, hand back that commit's gzip tarball — read out of a local
+    repository instead of over HTTP. ``owner`` and ``repo`` are accepted
+    because the ``GitTransport`` protocol passes them, and are *ignored*:
+    the ``root`` this was constructed with is the whole repository
+    selection, which is the one difference worth pinning.
+
+    The property that makes a local source a *source* rather than a
+    directory read is that ``fetch_archive`` archives the committed tree at
+    a SHA — never the working tree. Without it, "pinned to a commit" would
+    mean "whatever the operator had unsaved at the moment we looked", and
+    there would be no reason to go through git at all instead of copying
+    the directory.
+
+    The class is reached through ``git_mod`` rather than imported by name
+    at module scope on purpose: while it does not exist, every test here
+    fails on its own ``AttributeError`` instead of one collection error
+    taking :class:`TestGitHubTransport` down with it.
+    """
+
+    def test_constructor_takes_only_root(self) -> None:
+        params = inspect.signature(git_mod.LocalGitTransport).parameters
+        assert list(params) == ["root"]
+
+    def test_the_methods_take_the_protocol_parameters(self) -> None:
+        for method in ("resolve_commit", "fetch_archive"):
+            assert list(
+                inspect.signature(getattr(git_mod.LocalGitTransport, method)).parameters
+            ) == list(inspect.signature(getattr(GitTransport, method)).parameters)
+
+    def test_resolve_commit_of_head_returns_a_forty_hex_sha(
+        self, checkout: _Checkout
+    ) -> None:
+        sha = git_mod.LocalGitTransport(checkout.root).resolve_commit(
+            _OWNER, _REPO, "HEAD"
+        )
+
+        assert sha == checkout.head
+        assert len(sha) == 40
+        assert set(sha) <= set("0123456789abcdef")
+
+    def test_resolve_commit_of_the_checked_out_branch_is_the_head_commit(
+        self, checkout: _Checkout
+    ) -> None:
+        sha = git_mod.LocalGitTransport(checkout.root).resolve_commit(
+            _OWNER, _REPO, "main"
+        )
+
+        assert sha == checkout.head
+
+    def test_resolve_commit_of_another_branch_is_that_branchs_tip(
+        self, checkout: _Checkout
+    ) -> None:
+        sha = git_mod.LocalGitTransport(checkout.root).resolve_commit(
+            _OWNER, _REPO, _BRANCH
+        )
+
+        assert sha == checkout.tagged
+        assert sha != checkout.head
+
+    def test_resolve_commit_of_a_tag_is_the_tagged_commit(
+        self, checkout: _Checkout
+    ) -> None:
+        sha = git_mod.LocalGitTransport(checkout.root).resolve_commit(
+            _OWNER, _REPO, _TAG
+        )
+
+        assert sha == checkout.tagged
+
+    def test_resolve_commit_of_an_annotated_tag_is_the_commit_not_the_tag_object(
+        self, checkout: _Checkout
+    ) -> None:
+        """``git rev-parse`` on an annotated tag yields the *tag object*.
+
+        The protocol promises a commit SHA, and a tag object's SHA is not
+        one — an activation pinned to it would name something ``git log``
+        cannot walk. ``git tag -a`` is how a harness release gets cut, so
+        this is the ordinary case rather than an exotic one.
+        """
+        sha = git_mod.LocalGitTransport(checkout.root).resolve_commit(
+            _OWNER, _REPO, _ANNOTATED_TAG
+        )
+
+        assert sha == checkout.tagged
+
+    def test_resolve_commit_of_a_sha_is_that_same_sha(
+        self, checkout: _Checkout
+    ) -> None:
+        transport = git_mod.LocalGitTransport(checkout.root)
+
+        assert transport.resolve_commit(_OWNER, _REPO, checkout.tagged) == (
+            checkout.tagged
+        )
+
+    def test_resolve_commit_without_a_ref_takes_the_default_branch(
+        self, checkout: _Checkout
+    ) -> None:
+        sha = git_mod.LocalGitTransport(checkout.root).resolve_commit(
+            _OWNER, _REPO, None
+        )
+
+        assert sha == checkout.head
+
+    @pytest.mark.parametrize(
+        ("owner", "repo"),
+        [("", ""), ("acme", "somewhere-else"), ("MolCrafts", "harness")],
+    )
+    def test_owner_and_repo_do_not_select_the_repository(
+        self, checkout: _Checkout, owner: str, repo: str
+    ) -> None:
+        sha = git_mod.LocalGitTransport(checkout.root).resolve_commit(
+            owner, repo, "HEAD"
+        )
+
+        assert sha == checkout.head
+
+    def test_the_root_is_what_selects_the_repository(
+        self, tmp_path: Path, checkout: _Checkout
+    ) -> None:
+        other = tmp_path / "other"
+        _init(other)
+        _write(other / "harness.toml", '[harness]\nname = "other"\n')
+        other_head = _commit(other, "only")
+
+        assert other_head != checkout.head
+        assert (
+            git_mod.LocalGitTransport(checkout.root).resolve_commit(_OWNER, _REPO, None)
+            == checkout.head
+        )
+        assert (
+            git_mod.LocalGitTransport(other).resolve_commit(_OWNER, _REPO, None)
+            == other_head
+        )
+
+    def test_fetch_archive_returns_bytes_extract_git_archive_accepts(
+        self, tmp_path: Path, checkout: _Checkout
+    ) -> None:
+        data = git_mod.LocalGitTransport(checkout.root).fetch_archive(
+            _OWNER, _REPO, checkout.head
+        )
+
+        assert isinstance(data, bytes)
+        inner = _extract(data, tmp_path, "raw")
+        assert inner.is_dir()
+
+    def test_the_archived_tree_holds_the_committed_files(
+        self, tmp_path: Path, checkout: _Checkout
+    ) -> None:
+        data = git_mod.LocalGitTransport(checkout.root).fetch_archive(
+            _OWNER, _REPO, checkout.head
+        )
+
+        inner = _extract(data, tmp_path, "raw")
+        assert _tree(inner) == {"harness.toml", "skills/greet.md"}
+        assert (inner / "harness.toml").read_text(encoding="utf-8") == _MANIFEST
+
+    def test_the_archive_is_the_committed_tree_not_the_working_tree(
+        self, tmp_path: Path, checkout: _Checkout
+    ) -> None:
+        assert (checkout.root / "scratch.txt").is_file(), "fixture wrote no scratch"
+
+        data = git_mod.LocalGitTransport(checkout.root).fetch_archive(
+            _OWNER, _REPO, checkout.head
+        )
+
+        inner = _extract(data, tmp_path, "raw")
+        assert "scratch.txt" not in _tree(inner)
+
+    def test_an_earlier_sha_archives_that_commits_tree(
+        self, tmp_path: Path, checkout: _Checkout
+    ) -> None:
+        data = git_mod.LocalGitTransport(checkout.root).fetch_archive(
+            _OWNER, _REPO, checkout.tagged
+        )
+
+        inner = _extract(data, tmp_path, "raw")
+        assert _tree(inner) == {"harness.toml"}
+
+    def test_the_inner_directory_names_the_commit_it_was_taken_at(
+        self, tmp_path: Path, checkout: _Checkout
+    ) -> None:
+        data = git_mod.LocalGitTransport(checkout.root).fetch_archive(
+            _OWNER, _REPO, checkout.head
+        )
+
+        inner = _extract(data, tmp_path, "raw")
+        assert checkout.head in inner.name
+
+    def test_an_unknown_ref_raises_git_error(self, checkout: _Checkout) -> None:
+        with pytest.raises(GitError) as excinfo:
+            git_mod.LocalGitTransport(checkout.root).resolve_commit(
+                _OWNER, _REPO, "no-such"
+            )
+
+        assert not isinstance(excinfo.value, subprocess.CalledProcessError)
+
+    def test_an_unknown_sha_raises_git_error(self, checkout: _Checkout) -> None:
+        with pytest.raises(GitError) as excinfo:
+            git_mod.LocalGitTransport(checkout.root).fetch_archive(_OWNER, _REPO, _SHA)
+
+        assert not isinstance(excinfo.value, subprocess.CalledProcessError)
+
+    def test_a_root_that_is_not_a_repository_raises_git_error(
+        self, tmp_path: Path
+    ) -> None:
+        plain = tmp_path / "plain"
+        _write(plain / "harness.toml", _MANIFEST)
+
+        with pytest.raises(GitError):
+            git_mod.LocalGitTransport(plain).resolve_commit(_OWNER, _REPO, "HEAD")
+
+    def test_fetching_from_a_root_that_is_not_a_repository_raises_git_error(
+        self, tmp_path: Path
+    ) -> None:
+        plain = tmp_path / "plain"
+        _write(plain / "harness.toml", _MANIFEST)
+
+        with pytest.raises(GitError):
+            git_mod.LocalGitTransport(plain).fetch_archive(_OWNER, _REPO, _SHA)
+
+    def test_a_root_that_does_not_exist_raises_git_error(self, tmp_path: Path) -> None:
+        with pytest.raises(GitError):
+            git_mod.LocalGitTransport(tmp_path / "missing").resolve_commit(
+                _OWNER, _REPO, "HEAD"
+            )

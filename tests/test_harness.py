@@ -8,7 +8,7 @@ disciplines, and ``test_harness_catalog_fixture.py`` parses ``docs/``. This
 one is the ``src/molmcp/harness.py`` mirror the layout rule asks for, and
 covers only the symbols that module owns.
 
-Six units are exercised here, each in isolation:
+Seven units are exercised here, each in isolation:
 
 *``pointer_path`` is a security fix, not a formatting helper.*
 ``HarnessSource.name`` is governed only as "non-empty, whitespace-free":
@@ -20,6 +20,17 @@ today, and the moment a name is interpolated into ``harness.{name}.pointer``
 it becomes path *structure* rather than a label. The guard is at the point of
 use because that is the only place that knows the name is about to be a path
 segment.
+
+*``assert_servable`` is the strict end of a permissive load.* A ``path`` may
+be written any way ``HarnessSource`` accepts — ``tests/test_settings.py``'s
+``test_a_path_may_hold_the_separator_a_coordinate_may_not`` pins that green,
+and it stays green — and this function is where one of those spellings has to
+resolve to one directory. The rule it adds is **working-directory dependence,
+not relativeness**: ``~/harness`` fails ``Path.is_absolute()`` and is accepted,
+because home does not differ between the sessions that share one
+``~/.molmcp/settings.json``. The refusals are driven over real checkouts
+planted where the refused spelling points, so none of them can pass by way of
+the "that is not a checkout" rule this one joins.
 
 *``SourcedComponent`` pairs an origin with an untouched spec.*
 ``components/models.py:120-127`` pins ``id == f"{kind}.{name}"`` and
@@ -68,6 +79,7 @@ import dataclasses
 import json
 import logging
 import os
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -1315,3 +1327,297 @@ class TestActivatedCheckouts:
             )
 
         assert _warnings(caplog) == []
+
+
+#: ``user.name`` / ``user.email`` for the one commit ``_git_checkout`` makes.
+#: Passed per invocation rather than configured, so no developer's global git
+#: identity is read and none is written into ``tmp_path``.
+_GIT_IDENTITY = (
+    "-c",
+    "user.name=molmcp tests",
+    "-c",
+    "user.email=tests@molmcp.invalid",
+)
+
+
+def _run_git(root: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _git_checkout(root: Path) -> Path:
+    """Create *root* as a real one-commit git repository and return it.
+
+    ``assert_servable`` probes for ``.git`` under the root it is handed, so a
+    directory holding an empty file of that name would satisfy the letter of
+    the check. A real repository is planted anyway, because the refusals below
+    turn on it: each of them puts a checkout **that really works** at the
+    location a working-directory-relative spelling names, so the claim under
+    test is "refused even though it resolves to something usable from where
+    this process happens to stand" rather than "refused because nothing is
+    there".
+
+    Mirrored from ``tests/test_stack.py``'s helper of the same name rather
+    than imported from it: that is a private name in a module mirroring a
+    different production unit, and the three lines are cheaper than coupling
+    two suites together.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    _run_git(root, "init", "-q", "--initial-branch=main")
+    (root / "harness.toml").write_text("", encoding="utf-8")
+    _run_git(root, "add", "-A")
+    _run_git(root, *_GIT_IDENTITY, "commit", "--no-gpg-sign", "-q", "-m", "first")
+    return root
+
+
+def _hermetic_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point ``~`` at an empty temporary tree and return it.
+
+    Both spellings of "the user's home" are aimed at the same directory:
+    :meth:`Path.home`, which is how the rest of this package finds it, and the
+    ``HOME`` / ``USERPROFILE`` environment that :func:`os.path.expanduser`
+    consults — ``Path.expanduser`` delegates to that function and does **not**
+    go through ``Path.home``. Pinning both keeps these tests on the behaviour
+    (a ``~`` path names one directory in every session) instead of on which of
+    the two APIs the expansion happens to be written with.
+    """
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
+
+
+def _working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Stand the process in a temporary project directory and return it.
+
+    This is the directory an MCP client's ``molmcp serve`` would inherit —
+    one of many, differing per session, and the thing a ``path`` entry may
+    not be read against.
+    """
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(project)
+    return project
+
+
+#: Every ``path`` spelling whose meaning follows the process's working
+#: directory, paired with the location it names once the working directory is
+#: the project tree :func:`_working_directory` creates.
+#:
+#: The bare segment is spelled ``checkout`` because that is the shape an
+#: operator types; note that its needle is an ordinary English word, so the
+#: message assertions it supports are the weakest of the four and the three
+#: punctuated spellings are the ones carrying that claim.
+_CWD_DEPENDENT = [
+    pytest.param("./checkout", ("checkout",), id="dot-slash"),
+    pytest.param("checkout", ("checkout",), id="bare-segment"),
+    pytest.param("../harness", ("..", "harness"), id="parent"),
+    pytest.param(
+        "harness/checkouts/mine",
+        ("harness", "checkouts", "mine"),
+        id="nested",
+    ),
+]
+
+
+class TestAssertServable:
+    """A local ``path`` must name one directory, whatever launched the process.
+
+    This function is the single owner of the servability rule — ``molmcp
+    serve`` reaches it through ``server._harness_locator`` and ``molmcp
+    harness sync`` calls it on the one entry it was named — so it is where a
+    ``path`` that cannot mean one thing has to be refused, beside the missing
+    ``ref`` and the directory that is no checkout.
+
+    The entry it reads comes out of ``~/.molmcp/settings.json``: **one file,
+    shared by every project on the machine**, while ``molmcp serve`` runs in
+    whatever working directory an MCP client happened to launch it in. A
+    ``path`` resolved against that directory therefore turns one stored string
+    into a different checkout per session, which is the failure this class
+    exists for.
+
+    The rule is **working-directory dependence, not relativeness**, and that
+    distinction is the whole of it. ``~/harness`` fails ``Path.is_absolute()``
+    and is nonetheless safe: it is home-relative, and home is the same
+    directory in every session. A bare ``is_absolute()`` guard would refuse a
+    spelling that already names one directory everywhere.
+
+    Nothing here rewrites the entry. ``~`` is expanded at serve time, where
+    resolving a path is the job, and the ``HarnessSource`` handed in comes
+    back with the same ``path`` string. That is the strict half of the split
+    ``settings.py`` documents: ``tests/test_settings.py``'s
+    ``test_a_path_may_hold_the_separator_a_coordinate_may_not`` pins the
+    permissive load side green over these very spellings, and it stays that
+    way — the coordinates already work like this, and this is the same split
+    applied to ``path``.
+    """
+
+    def test_an_absolute_checkout_is_servable(self, tmp_path: Path) -> None:
+        """The unambiguous spelling, unaffected: one directory, no context."""
+        checkout = _git_checkout(tmp_path / "checkout")
+
+        harness.assert_servable(HarnessSource(name="mine", path=str(checkout)))
+
+    def test_an_absolute_path_that_is_no_checkout_is_still_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The rule this one joins rather than replaces."""
+        with pytest.raises(ConfigurationError) as excinfo:
+            harness.assert_servable(
+                HarnessSource(name="mine", path=str(tmp_path / "gone"))
+            )
+
+        assert "mine" in str(excinfo.value)
+
+    @pytest.mark.parametrize(("spelling", "parts"), _CWD_DEPENDENT)
+    def test_a_path_read_against_the_working_directory_is_refused(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        spelling: str,
+        parts: tuple[str, ...],
+    ) -> None:
+        """Refused although a real checkout sits exactly where it points.
+
+        Each parameter plants a working repository at the location the
+        spelling resolves to *from this process's* working directory, so the
+        refusal cannot be mistaken for the existing "that is not a checkout"
+        rule reaching it first. What is wrong with the entry is not that it
+        names nothing — it is that it names something different in the next
+        session.
+        """
+        project = _working_directory(tmp_path, monkeypatch)
+        _git_checkout(project.joinpath(*parts))
+
+        with pytest.raises(ConfigurationError):
+            harness.assert_servable(HarnessSource(name="mine", path=spelling))
+
+    @pytest.mark.parametrize(("spelling", "parts"), _CWD_DEPENDENT)
+    def test_the_refusal_names_the_entry_and_the_path_as_written(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        spelling: str,
+        parts: tuple[str, ...],
+    ) -> None:
+        """Under a list of sources, the name is the address to go and fix.
+
+        The path is reported **as written**, not as it resolved: the operator
+        edits the string in the settings file, and an expanded path is not a
+        string that appears there.
+        """
+        project = _working_directory(tmp_path, monkeypatch)
+        _git_checkout(project.joinpath(*parts))
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            harness.assert_servable(HarnessSource(name="mine", path=spelling))
+
+        message = str(excinfo.value)
+        assert "mine" in message
+        assert spelling in message
+
+    def test_the_refusal_says_why_rather_than_only_that_the_path_is_relative(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Why, not what: "relative" is the symptom, not the cause.
+
+        The reason is two facts that are invisible from the entry itself: the
+        settings file is shared by every project on this machine, and the
+        working directory ``molmcp serve`` inherits is the client's, not the
+        operator's — so the one stored string resolves differently per
+        session. Told only "this path is relative", an operator has no reason
+        to read the rewrite as anything but pedantry, and ``~`` — also not
+        absolute, and accepted below — makes that reading actively wrong.
+        """
+        project = _working_directory(tmp_path, monkeypatch)
+        _git_checkout(project / "checkout")
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            harness.assert_servable(HarnessSource(name="mine", path="./checkout"))
+
+        message = str(excinfo.value).lower()
+        assert "shared" in message
+        assert "session" in message
+        assert "working directory" in message
+
+    def test_the_refusal_offers_both_spellings_that_do_not_move(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two ways out, and a message naming one of them hides the other.
+
+        An absolute path is the obvious answer; ``~`` is the one this rule
+        goes out of its way to keep legal. A message that named only the
+        first would send an operator to rewrite a home-relative entry that
+        this function accepts as it stands.
+        """
+        project = _working_directory(tmp_path, monkeypatch)
+        _git_checkout(project / "checkout")
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            harness.assert_servable(HarnessSource(name="mine", path="./checkout"))
+
+        message = str(excinfo.value)
+        assert "absolute" in message.lower()
+        assert "~" in message
+
+    def test_a_home_relative_path_naming_a_checkout_is_servable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``~/harness`` is not absolute and carries no working directory.
+
+        It names the same directory in every session, which is the property
+        the rule is about — so it is expanded here, where resolving a path is
+        the job, and served.
+        """
+        home = _hermetic_home(tmp_path, monkeypatch)
+        _working_directory(tmp_path, monkeypatch)
+        _git_checkout(home / "harness")
+
+        harness.assert_servable(HarnessSource(name="mine", path="~/harness"))
+
+    def test_a_home_relative_path_is_refused_when_home_holds_no_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other half: ``~`` expands to home and nowhere else.
+
+        A real checkout sits at ``harness`` under the working directory and
+        home is empty. Expansion is not a search path, so this entry names no
+        checkout — and it is refused as one, naming the string as written,
+        rather than as a working-directory-dependent path it is not.
+        """
+        _hermetic_home(tmp_path, monkeypatch)
+        project = _working_directory(tmp_path, monkeypatch)
+        _git_checkout(project / "harness")
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            harness.assert_servable(HarnessSource(name="mine", path="~/harness"))
+
+        message = str(excinfo.value)
+        assert "mine" in message
+        assert "~/harness" in message
+        assert "session" not in message.lower()
+
+    def test_the_stored_spelling_is_not_rewritten_by_the_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Expanding ``~`` is resolution, not the rewrite the type forbids.
+
+        ``HarnessSource`` stores what the operator wrote and hands it back
+        unchanged; the expansion lives for the duration of one probe. A
+        function that normalised the field in place would put a machine's
+        absolute path into a settings file the next machine reads.
+        """
+        home = _hermetic_home(tmp_path, monkeypatch)
+        _working_directory(tmp_path, monkeypatch)
+        _git_checkout(home / "harness")
+        source = HarnessSource(name="mine", path="~/harness")
+
+        harness.assert_servable(source)
+
+        assert source.path == "~/harness"

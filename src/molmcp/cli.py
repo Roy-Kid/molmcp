@@ -12,8 +12,10 @@ from typing import Any
 
 from . import __version__, settings
 from .client_config import render_init
+from .components import GitError
 from .config import AppConfig, ConfigurationError, load_config
 from .gate import run_gate
+from .harness_sync import sync_source
 from .host import (
     HOSTS,
     activate_dev,
@@ -232,6 +234,20 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Branch or tag; omit to leave it as it was.",
     )
+    # The other way to spell an origin: a checkout already on disk instead of
+    # a GitHub coordinate. The mutual exclusion is not declared here —
+    # `HarnessSource.__post_init__` refuses the pair, and argparse's own
+    # `add_mutually_exclusive_group` would only restate it for the one entry
+    # being typed, missing the coordinate that is already in the file.
+    harness_set.add_argument(
+        "--path",
+        default=None,
+        dest="source_path",
+        help=(
+            "Filesystem path of a checkout to serve this source from, "
+            "instead of --owner/--repo/--ref; omit to leave it as it was."
+        ),
+    )
     harness_remove = harness_actions.add_parser(
         "remove",
         help="Drop the harness source called --name.",
@@ -241,6 +257,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "--name",
         required=True,
         help="The entry's address, matched exactly.",
+    )
+
+    # A second top-level verb rather than a `config harness` leaf: `config`
+    # edits the settings file and stops there, while this one reaches the
+    # network (or a checkout), writes into the shared store and moves an
+    # activation pointer. Putting a fetch behind `molmcp config` would make a
+    # settings edit and a fetch look like the same kind of act.
+    harness_cmd = commands.add_parser(
+        "harness",
+        help="Fetch and activate the harness sources this install names.",
+    )
+    harness_verbs = harness_cmd.add_subparsers(dest="harness_verb", required=True)
+    harness_sync = harness_verbs.add_parser(
+        "sync",
+        help="Resolve one named source's ref, publish that commit, activate it.",
+    )
+    _config_argument(harness_sync)
+    harness_sync.add_argument(
+        "name",
+        help=(
+            "The harness source to sync, spelled as the `harness` settings "
+            "list names it. No default: with several sources configured, "
+            "guessing one would fetch code the operator did not ask for."
+        ),
     )
 
     cache = commands.add_parser(
@@ -609,7 +649,10 @@ def _config_harness(args: argparse.Namespace, target: Path) -> None:
 
     Args:
         args: The parsed namespace, carrying ``harness_action``, ``name``
-            and — on the ``set`` leaf — ``owner``/``repo``/``ref``, each
+            and — on the ``set`` leaf — ``owner``/``repo``/``ref`` and
+            ``source_path`` (the ``--path`` flag, whose dest is qualified to
+            match :func:`settings.set_harness_source`'s keyword and to stay
+            clear of the ``--config`` file paths on the same namespace), each
             ``None`` when it was not typed.
         target: The settings file the scope flags selected.
 
@@ -632,6 +675,7 @@ def _config_harness(args: argparse.Namespace, target: Path) -> None:
             owner=args.owner,
             repo=args.repo,
             ref=args.ref,
+            source_path=args.source_path,
         )
         return
     if args.harness_action == "remove":
@@ -639,6 +683,39 @@ def _config_harness(args: argparse.Namespace, target: Path) -> None:
         return
     raise ConfigurationError(
         f"unrecognized `molmcp config harness` action: {args.harness_action!r}"
+    )
+
+
+def _harness(args: argparse.Namespace) -> int:
+    """Dispatch one ``molmcp harness`` verb and report what it did.
+
+    The work belongs to :func:`molmcp.harness_sync.sync_source`; this handler
+    resolves the configuration, hands over the name, and turns the report into
+    two lines. Every failure leaves here as an exception for ``main``'s single
+    funnel to render, so an operator of a half-configured install gets one
+    sentence rather than a traceback.
+
+    Args:
+        args: The parsed ``harness`` namespace, carrying ``harness_verb`` and
+            — on the ``sync`` leaf — ``name`` plus the standard ``--config`` /
+            ``--env`` pair.
+
+    Returns:
+        ``0`` once the commit is published and the pointer says so.
+
+    Raises:
+        ConfigurationError: If ``harness_verb`` names a verb this handler does
+            not dispatch, or if the sync itself refuses the request.
+    """
+    if args.harness_verb == "sync":
+        report = sync_source(_load(args), args.name)
+        state = "activated" if report.promoted else "already activated"
+        print(f"{report.source}: {report.sha} {state}")
+        print(f"  tree    {report.tree}")
+        print(f"  pointer {report.pointer}")
+        return 0
+    raise ConfigurationError(
+        f"unrecognized `molmcp harness` verb: {args.harness_verb!r}"
     )
 
 
@@ -787,6 +864,7 @@ def main(argv: list[str] | None = None) -> int:
         "explore": _explore,
         "index": _index,
         "config": _config,
+        "harness": _harness,
         "cache": _cache,
         "gate": _gate,
     }
@@ -801,6 +879,15 @@ def main(argv: list[str] | None = None) -> int:
         # the CLI owes the user a sentence, not a traceback.
         sqlite3.Error,
         OSError,
+        # So is a ref that does not resolve or a repository that will not
+        # answer. GitError is registered here rather than converted at the
+        # verb that raised it, for two reasons: it is a RuntimeError, so it
+        # is caught by nothing above and would otherwise escape as a
+        # traceback; and its message already names the ref, the coordinate
+        # or the checkout root that git could not answer for, which a
+        # rewrite into ConfigurationError would replace with a guess about
+        # which of them was wrong.
+        GitError,
     ) as exc:
         print(f"molmcp: {exc}", file=sys.stderr)
         return 2

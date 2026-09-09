@@ -9,6 +9,16 @@ that reading; :mod:`molmcp.server` composes them, owns the decision of when to
 run each one, and owns resolving the :class:`~molmcp.config.AppConfig` they are
 handed.
 
+Four names here are shared with :mod:`molmcp.harness_sync`, which does the
+writing: :func:`assert_servable` (which entries an install may reach at all),
+:func:`local_checkout_path` (which directory a local entry names),
+:func:`store_path` and :func:`pointer_path` (where a commit and its activation
+land). They live on this side because a rule with two spellings is a rule two
+commands can disagree about — a settings entry ``molmcp serve`` refuses cannot
+be one ``molmcp harness sync`` accepts, a checkout one command reads at
+``~/harness`` cannot be one the other reads at ``./~/harness``, and a commit
+published anywhere but :func:`store_path` is one nothing serves.
+
 This module sits on the **heavy** side of the child-safe import boundary, by
 choice rather than by accident: it carries
 ``from .provider_worker.worker import WorkerProvider``, so importing it drags
@@ -68,6 +78,29 @@ logger = logging.getLogger(__name__)
 #: grammar tomorrow claim runtime support that nothing here implements.
 SUPPORTED_CAPABILITIES = frozenset({"provider-sdk", "harness-catalog"})
 
+#: The three coordinates that locate one named harness repository on GitHub.
+#: A *remote* entry carries all three or none of them; anything between is a
+#: configuration error rather than a value to guess at. They are not the whole
+#: completeness rule — :func:`assert_servable` reads them only after it has
+#: found no ``path``, because a local entry's coordinates are empty by
+#: construction rather than by omission.
+#:
+#: This is deliberately not ``molmcp.settings._HARNESS_ENTRY_KEYS``, which also
+#: holds ``name`` and ``path``: that set is what a settings-file entry may
+#: *write*, this one is what a *remote* entry must have filled in before it can
+#: be fetched from.
+HARNESS_COORDINATES = ("owner", "repo", "ref")
+
+#: What a local origin must have at the root it names. Probed with ``exists``
+#: rather than ``is_dir``: ``.git`` is a directory in an ordinary clone and a
+#: file in a linked worktree, and both are checkouts.
+_GIT_DIR_NAME = ".git"
+
+#: The shared store's directory name under the resolved cache root. Spelled
+#: once here and read through :func:`store_path`; see that function for why it
+#: is not a literal at its two call sites.
+_STORE_DIR_NAME = "harness"
+
 #: Source names :func:`pointer_path` refuses outright, kept for symmetry with
 #: :data:`molmcp.components.store._RESERVED_SHA_KEYS` rather than because
 #: either one escapes a directory — see that function's docstring.
@@ -75,12 +108,13 @@ _RESERVED_SOURCE_NAMES = frozenset({".", ".."})
 
 #: The one shared pointer file this install bound before sources were
 #: activated by name. It is *named* once when it is the only pointer on disk
-#: and never read: nothing in the product writes it (there is no caller of
-#: ``Activation.stage`` / ``promote`` / ``rollback`` anywhere in ``src/``), so
-#: the population it can still mislead is very nearly empty, and one notice
-#: where it can matter is the whole budget. No source name can produce this
-#: file — :func:`pointer_path` always interpolates a non-empty name — so the
-#: probe is unambiguous.
+#: and never read. Nothing writes it: ``molmcp harness sync`` is now the one
+#: caller of :meth:`~molmcp.components.Activation.stage` and
+#: :meth:`~molmcp.components.Activation.promote` in ``src/``, and it writes
+#: only through :func:`pointer_path`, which always interpolates a non-empty
+#: source name. No source name can therefore produce this file, so the probe
+#: is unambiguous — and the population it can still mislead is whoever ran a
+#: pre-``sync`` build by hand, which is why one notice is the whole budget.
 _LEGACY_POINTER_NAME = "harness.pointer"
 
 
@@ -363,6 +397,219 @@ def pointer_path(root: Path, name: str) -> Path:
     return root / f"harness.{name}.pointer"
 
 
+def store_path(root: Path) -> Path:
+    """Name the one shared store every harness source publishes into.
+
+    Every source's commits land under ``<root>/harness``, a sibling of the
+    per-source pointer files :func:`pointer_path` names. One directory, not
+    one per source: :class:`~molmcp.components.ImmutableGitStore` keys a
+    commit on its SHA alone, so a second root would buy no isolation and
+    would strand every already-published tree.
+
+    It is a function rather than a literal spelled at each call site because
+    it has two callers that must agree exactly — the serve-time reader here
+    and ``molmcp harness sync``, which publishes into it. A sync writing
+    anywhere else would leave :func:`activated_checkouts` unable to find the
+    commit that was just activated, and the failure would look like a
+    corrupt pointer rather than like a typo.
+
+    Nothing is created here: this computes a path and never touches the
+    filesystem.
+
+    Args:
+        root: The resolved cache root.
+
+    Returns:
+        The shared store directory under *root*.
+    """
+    return root / _STORE_DIR_NAME
+
+
+def local_checkout_path(source: HarnessSource) -> Path:
+    """Name the directory one local harness entry's ``path`` points at.
+
+    The string an operator stores is not always the directory to read.
+    :func:`assert_servable` accepts ``~/harness`` — home is the same
+    directory in every session, so that entry names one checkout rather than
+    a different one per client — which makes the home-relative spelling the
+    one servable ``path`` that must be expanded before anything opens it.
+    Handed to a transport as written, ``~/harness`` is an ordinary
+    two-segment relative path read against whatever working directory the
+    client that launched the process happened to stand in.
+
+    A function rather than an ``expanduser()`` at each call site, for the
+    reason :func:`store_path` is one: it has two callers that must agree
+    exactly — the servability check below and ``molmcp harness sync``'s
+    choice of transport root. A checkout ``molmcp serve`` probes at one
+    location cannot be one ``molmcp harness sync`` clones from another,
+    which is the failure two spellings drift into.
+
+    **Only ``~`` is expanded.** :meth:`Path.resolve` would turn the
+    working-directory-relative spellings :func:`assert_servable` exists to
+    refuse into absolute paths, so the refusal would stop firing; it would
+    also normalise the operator's stored string — possibly authored on
+    another machine — into this machine's answer, which is the bug in the
+    same family. Nothing is created and nothing is read here: this computes
+    a path and never touches the filesystem.
+
+    Args:
+        source: One entry of the ``harness`` settings list, whose ``path``
+            the caller has already found non-empty. An entry naming a GitHub
+            coordinate has no local checkout at all, and its empty ``path``
+            would come back as the working directory rather than as nothing.
+
+    Returns:
+        The directory that entry's ``path`` names, with a leading ``~``
+        expanded to this session's home.
+    """
+    return Path(source.path).expanduser()
+
+
+def assert_servable(source: HarnessSource) -> None:
+    """Refuse one harness source that names no origin this install can reach.
+
+    An entry names **one** origin, and which one is read off its shape rather
+    than off a flag: ``path`` is a checkout already on disk, the three
+    :data:`HARNESS_COORDINATES` are a GitHub repository, and
+    :class:`~molmcp.settings.HarnessSource` refuses both at once. Reading
+    completeness as "all three coordinates are filled in" would therefore
+    report the one legal shape of a local source — three empty coordinates —
+    as half-authored, which is how a ``path``-only entry could never serve.
+
+    A local origin is checked against the filesystem here, beside the remote
+    entry's missing ``ref``, because it is the same kind of mistake: the
+    settings file is what is wrong, and the operator needs the entry name and
+    the path in one sentence rather than a ``GitError`` out of a transport
+    several steps later. The probe is ``.git`` under the named root, and it
+    is ``exists`` rather than ``is_dir`` on purpose — ``.git`` is a directory
+    in an ordinary clone and a *file* in a linked worktree.
+
+    Before that probe, a ``path`` is refused for **working-directory
+    dependence — deliberately not for relativeness**, and the difference is
+    the whole rule rather than a shade of wording. The entry is read out of
+    ``~/.molmcp/settings.json``, one file shared by every project on this
+    machine, while ``molmcp serve`` inherits whatever working directory the
+    client that launched it happened to stand in, so ``./checkout`` is one
+    stored string naming a different repository per session. ``~/harness``
+    fails ``Path.is_absolute()`` and carries none of that: home is the same
+    directory in every session, so it is expanded — through
+    :func:`local_checkout_path`, the one spelling of that expansion — and
+    served. Narrowed to ``is_absolute()`` this test
+    would refuse a spelling that already names one directory everywhere,
+    which is why the refusal offers ``~`` as a way out beside the absolute
+    path: a message naming only the second would send an operator to rewrite
+    an entry this function accepts as it stands.
+
+    The order is load-bearing, not incidental. A real checkout can sit
+    exactly where ``./checkout`` points from *this* process's working
+    directory, so a cwd check placed after the probe would accept the entry
+    on the strength of a repository the next session does not resolve to.
+
+    Expanding is not rewriting. The source is read and never modified: the
+    stored string is the operator's, it may have been authored on another
+    machine, and normalising it to this machine's absolute path is a bug in
+    the same family as the one being refused. Every message here reports the
+    path **as written**, because that is the string the operator will look
+    for in the settings file.
+
+    This is the single owner of the rule. ``molmcp serve`` reaches it through
+    :func:`molmcp.server._harness_locator` and ``molmcp harness sync`` calls
+    it on the one entry it was given, so an entry one command refuses cannot
+    be one the other accepts. What a caller may then assume of a ``path`` it
+    let through is exactly two things — that the string does not follow the
+    working directory, and that it names a checkout **once expanded**. It is
+    not a licence to open ``source.path`` as written: the caller expands it,
+    which means calling :func:`local_checkout_path`.
+
+    Args:
+        source: One entry of the ``harness`` settings list, as written.
+
+    Raises:
+        ConfigurationError: The entry names no origin at all, names a
+            partial GitHub coordinate, or names a ``path`` that follows the
+            working directory or is not a git checkout. Each message names
+            the entry, because under a list of sources the entry's name is
+            the address an operator goes to fix it, and names the path as the
+            settings file spells it. The partial-coordinate message
+            deliberately does **not** offer ``path``: an entry already
+            carrying an ``owner`` is a remote one, and telling its author to
+            add a ``path`` beside it is an instruction
+            ``HarnessSource.__post_init__`` raises on.
+    """
+    if source.path.strip():
+        root = local_checkout_path(source)
+        if not root.is_absolute():
+            raise ConfigurationError(
+                f"the harness source named {source.name!r} names a `path` "
+                f"that is read against the working directory: {source.path}. "
+                f"Your settings file is shared by every project on this "
+                f"machine, and `molmcp serve` inherits the working directory "
+                f"of whichever client launched it, so that one entry names a "
+                f"different checkout in every session. Write it as an "
+                f"absolute path, or as a `~/` path — home is the same "
+                f"directory in every session — on that entry of the `harness` "
+                f"list in your settings file, or remove the entry to serve "
+                f"without it."
+            )
+        if (root / _GIT_DIR_NAME).exists():
+            return
+        raise ConfigurationError(
+            f"the harness source named {source.name!r} names a `path` that is "
+            f"not a git checkout: {source.path}. A local origin is pinned to a "
+            f"commit exactly as a remote one is, so it must be the root of a "
+            f"repository already on disk — the directory holding its `.git`. "
+            f"Point that entry of the `harness` list at a checkout, or remove "
+            f"the entry to serve without it."
+        )
+    missing = [key for key in HARNESS_COORDINATES if not getattr(source, key).strip()]
+    if not missing:
+        return
+    if len(missing) == len(HARNESS_COORDINATES):
+        raise ConfigurationError(
+            f"the harness source named {source.name!r} names no origin: set "
+            f"owner, repo and ref to fetch it from a GitHub repository, or "
+            f"set path to a checkout already on disk. Fill one of those in on "
+            f"that entry of the `harness` list in your settings file, or "
+            f"remove the entry to serve without it."
+        )
+    named = ", ".join(missing)
+    raise ConfigurationError(
+        f"the harness source named {source.name!r} is incomplete: "
+        f"{named} {'is' if len(missing) == 1 else 'are'} not set. Fill "
+        f"{'it' if len(missing) == 1 else 'them'} in on that entry of the "
+        f"`harness` list in your settings file, or remove the entry to "
+        f"serve without it."
+    )
+
+
+def servable_sources(
+    sources: Sequence[HarnessSource],
+) -> tuple[HarnessSource, ...]:
+    """Check every named source and hand the whole list back in file order.
+
+    Every entry is checked and none is ever skipped. An entry that names no
+    reachable origin is refused rather than passed over in favour of its
+    neighbour, for the same reason no coordinate is defaulted: carrying on
+    from the next entry would serve code from a repository the operator did
+    not select.
+
+    Args:
+        sources: Every named harness source, in the order the settings list
+            names them.
+
+    Returns:
+        The same sources, in the same order — that order is the operator's
+        priority control over a component two sources both declare, and it is
+        carried through :func:`activated_checkouts` into the fold.
+
+    Raises:
+        ConfigurationError: Any entry fails :func:`assert_servable`.
+    """
+    for source in sources:
+        assert_servable(source)
+    return tuple(sources)
+
+
 def activated_checkouts(
     config: AppConfig, sources: Sequence[HarnessSource]
 ) -> tuple[Checkout, ...]:
@@ -454,7 +701,7 @@ def activated_checkouts(
             legacy,
         )
 
-    store_root = root / "harness"
+    store_root = store_path(root)
     store = ImmutableGitStore(root=store_root, transport=GitHubTransport())
     checkouts: list[Checkout] = []
     for source, pointer in pointers:
