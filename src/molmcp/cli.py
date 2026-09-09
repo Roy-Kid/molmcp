@@ -15,6 +15,7 @@ from .client_config import render_init
 from .components import GitError
 from .config import AppConfig, ConfigurationError, load_config
 from .gate import run_gate
+from .harness_install import install_harness_components
 from .harness_sync import sync_source
 from .host import (
     HOSTS,
@@ -461,18 +462,27 @@ def _route(args: argparse.Namespace) -> int:
 
 
 def _init(args: argparse.Namespace) -> int:
-    """Wire one host: MCP JSON, usage skill, daily bundle, adapter, dev harness.
+    """Wire one host: MCP JSON, usage skill, bundles, adapter, catalog components.
 
     MCP (Model Context Protocol) is the wire protocol an AI client uses to
     call tools, so the JSON written here is that client's list of servers to
-    launch. Every other destination belongs to :mod:`molmcp.host`, whose five
-    write primitives are composed here in order rather than hidden behind a
-    facade, so each destination has exactly one visible writer.
+    launch. Every other destination belongs to :mod:`molmcp.host`, whose write
+    primitives are composed here in order rather than hidden behind a facade,
+    so each destination has exactly one visible writer.
 
     ``--source`` is interpreted once, by ``resolve_bundle_source``, and it is
     that resolved value — never the raw flag — that the three bundle
     primitives receive. A checkout that is not a directory therefore fails
     here instead of degrading silently to the packaged backend.
+
+    ``install_harness_components`` is the other origin — the commit a
+    ``molmcp harness sync`` activated, read down to the files its catalog
+    declares — and it comes **last** for a reason that is not cosmetic. The
+    placement seam keeps a catalog off the managed usage skill by *skipping*
+    any destination inside that directory, and skipping protects a file only
+    once it is there: run before ``install_skill``, the refusal would still
+    fire and the constitution would then be written over whatever the catalog
+    had put in its place.
 
     Args:
         args: Parsed ``init`` arguments: the host, the plane toggles
@@ -482,11 +492,17 @@ def _init(args: argparse.Namespace) -> int:
     Returns:
         ``0`` once the MCP JSON, the usage skill, and the adapter are written,
         along with whichever daily and dev files the resolved checkout
-        supplied — none of them when there is no checkout.
+        supplied — none of them when there is no checkout — and whichever
+        components the activated harness commits declared, none of them when
+        no configured source is synced.
 
     Raises:
-        FileNotFoundError: If ``--source`` is not a directory.
-        ValueError: If the host or a plane toggle is unknown.
+        FileNotFoundError: If ``--source`` is not a directory, or if a harness
+            catalog declares a file its own published tree does not hold.
+        ValueError: If the host or a plane toggle is unknown, or if an
+            activated commit's catalog cannot be served.
+        ConfigurationError: If a harness source's pointer names a commit with
+            no published tree.
     """
     resolved = resolve_bundle_source(args.source)
     toggle, text = render_init(
@@ -506,13 +522,16 @@ def _init(args: argparse.Namespace) -> int:
     adapter_path = write_adapter(args.host)
     stubs = materialize_dev_index(args.host, resolved)
     dev_root = activate_dev(args.host, resolved)
+    placed = install_harness_components(args.host)
     print(
         f"wrote {path}  enabled={list(toggle.enabled)}  "
         f"disabled={list(toggle.disabled)}\n"
         f"wrote {skill_path}\n"
         f"wrote {adapter_path}, {len(daily)} daily skill file(s), "
         f"{len(stubs)} dev command stub(s), and dev harness "
-        f"{dev_root if dev_root is not None else '(none: no checkout given)'}",
+        f"{dev_root if dev_root is not None else '(none: no checkout given)'}\n"
+        f"placed {len(placed.installed)} harness catalog component file(s), "
+        f"{len(placed.skipped)} refused",
         file=sys.stderr,
     )
     return 0

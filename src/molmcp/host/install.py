@@ -259,8 +259,10 @@ def activate_dev(host: Host, source: Path | None) -> Path | None:
     """Copy the checkout's whole dev tree into *host*'s ``molmcp-dev/``.
 
     This is the only destination that holds full dev bodies. The host's
-    ``agents/`` and ``rules/`` directories are recorded in the layout table
-    but are never written, so user files there are safe.
+    ``agents/`` and ``rules/`` directories are written by
+    :func:`~molmcp.host.place.place_components` and by nothing else: it copies
+    the ``agent`` and ``rule`` rows a harness catalog declares, one named file
+    at a time, so a user's own files beside them are left alone.
 
     Args:
         host: One of the known hosts.

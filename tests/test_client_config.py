@@ -173,12 +173,22 @@ WITHDRAWN_NAMES: tuple[str, ...] = (
 INIT_HOSTS: tuple[str, ...] = ("grok", "claude", "cursor", "codex")
 
 #: The write primitives ``cli._init`` composes, in the order it must call them.
+#:
+#: ``install_harness_components`` is the activated-commit route — the pointer
+#: one ``molmcp harness sync`` promoted, read down to the files its catalog
+#: declares — and it is last for a reason that is not cosmetic. The placement
+#: seam protects the managed usage skill by *skipping* a destination inside
+#: that directory, which protects a file only once it is there, so the step
+#: has to run after ``install_skill`` has written the constitution. Everything
+#: between is the ``--source`` checkout route, which this one joins rather
+#: than replaces.
 INIT_PRIMITIVES: tuple[str, ...] = (
     "install_skill",
     "materialize_daily",
     "write_adapter",
     "materialize_dev_index",
     "activate_dev",
+    "install_harness_components",
 )
 
 #: Primitives that take a checkout; each must get the resolved value.
@@ -328,6 +338,26 @@ class TestInitComposesTheHostPrimitives:
         )
         ordered = [positions[name][0] for name in INIT_PRIMITIVES]
         assert ordered == sorted(set(ordered))
+
+    def test_catalog_components_are_placed_after_the_constitution_exists(
+        self,
+    ) -> None:
+        """The activated-commit route runs once ``install_skill`` has written.
+
+        Stated on its own as well as through the tuple above, because it is
+        the one ordering constraint with a reason rather than a convention:
+        ``place_components`` keeps a catalog off the managed usage skill by
+        skipping any destination inside that directory, and skipping protects
+        a file that is already there. Placed before ``install_skill``, the
+        refusal would still fire and the constitution would then be written
+        over whatever the catalog had put in its place.
+        """
+        body = _init_function().body
+
+        assert (
+            _statement_indices(body, "install_skill")[0]
+            < _statement_indices(body, "install_harness_components")[0]
+        )
 
     def test_the_resolver_runs_before_the_primitives_it_feeds(self) -> None:
         body = _init_function().body

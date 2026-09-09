@@ -13,10 +13,12 @@ is that serving "is a read of the activation pointers and of each checkout's
 ``harness.toml`` — never a fetch, never a write". Fetching and writing are this
 module's whole job, so folding them in there would make that sentence false.
 What the two share is spelled once and imported: :func:`~molmcp.harness.
-assert_servable` (which entries this install may reach),
-:func:`~molmcp.harness.local_checkout_path` (which directory a local entry's
-``path`` names), :func:`~molmcp.harness.store_path` and
-:func:`~molmcp.harness.pointer_path` (where a commit and its activation land).
+assert_servable` (which entries this install may reach), and from the light
+:mod:`molmcp.harness_paths` leaf that ``molmcp init`` reads too,
+:func:`~molmcp.harness_paths.local_checkout_path` (which directory a local
+entry's ``path`` names), :func:`~molmcp.harness_paths.store_path` and
+:func:`~molmcp.harness_paths.pointer_path` (where a commit and its activation
+land).
 
 **Transport is chosen by the source's shape, never by a flag.**
 :class:`~molmcp.settings.HarnessSource` already refuses an entry carrying both
@@ -46,9 +48,9 @@ from .components import (
 from .components.activate import ActivationVersionError, IneligibleShaError
 from .components.store import StoreError
 from .config import AppConfig, ConfigurationError
-from .harness import (
+from .harness import assert_servable
+from .harness_paths import (
     SUPPORTED_CAPABILITIES,
-    assert_servable,
     local_checkout_path,
     pointer_path,
     store_path,
@@ -65,7 +67,7 @@ class SyncReport:
         source: Name of the harness source that was synced.
         sha: Commit the source's ref resolved to, and the one now activated.
         tree: Published catalog root for that commit, under
-            :func:`~molmcp.harness.store_path`.
+            :func:`~molmcp.harness_paths.store_path`.
         pointer: Activation pointer file this source owns.
         promoted: ``True`` when the pointer moved, ``False`` when *sha* was
             already the activated commit and nothing was staged. The
@@ -186,7 +188,7 @@ def _transport(source: HarnessSource) -> GitTransport:
     "the path is ready to use": the stored string does not follow the working
     directory, and it names a real checkout **once expanded**. The expansion
     is still this function's to do, and it is done by calling
-    :func:`~molmcp.harness.local_checkout_path` rather than by a second
+    :func:`~molmcp.harness_paths.local_checkout_path` rather than by a second
     ``expanduser()`` here — a home-relative ``~/harness``, which that check
     accepts precisely because home is the same directory in every session,
     would otherwise root this transport at a *literal* ``~`` directory under
