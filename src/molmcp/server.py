@@ -15,13 +15,12 @@ from mcp.types import ToolAnnotations
 
 from .collection import CollectionIndex
 from .components import ComponentKind
-from .config import AppConfig, ConfigurationError
+from .config import AppConfig, ConfigurationError, load_config
 from .harness import (
     Checkout,
-    _activated_checkout,
-    _checkout_components,
-    _checkout_planes,
-    _resolve_config,
+    activated_checkouts,
+    checkout_planes,
+    fold_components,
 )
 from .mcp_provider import MolCraftsContextProvider
 from .middleware import (
@@ -265,8 +264,8 @@ def create_stack(
     tools stay bare (``packages``, ``open``, ``route``). ``molcrafts`` cannot
     be disabled.
 
-    This is also the only composition root the activated harness checkout
-    reaches — one commit of the user's harness repository (see
+    This is also the only composition root the activated harness checkouts
+    reach — one commit per named harness source (see
     :data:`molmcp.harness.SUPPORTED_CAPABILITIES`), already unpacked under
     the cache directory. It has two arms, each with an owner: the *overlay*
     arm builds the collection (it runs when *collection* is not injected),
@@ -275,12 +274,21 @@ def create_stack(
     skips that arm and only that arm. Injecting both means the caller has
     answered everything, so the harness sources are never even read.
 
-    An arm that would reach for the checkout reads
+    An arm that would reach for a checkout reads
     :func:`~molmcp.settings.load_settings` once and validates every named
     source. An empty list — no source named at all — serves exactly as this
     did before the harness existed; an entry missing a coordinate is a
     :class:`~molmcp.config.ConfigurationError` rather than a guess at the
     missing half, and no entry is skipped in favour of the next.
+
+    Every activated source contributes, and each arm folds them itself
+    (:func:`molmcp.harness.fold_components`): components are taken in the
+    order the ``harness`` settings list names their sources, and a component
+    id two sources both declare is kept once, from the earlier entry, with the
+    later one reported. For a provider that id *is* a plane name, so the fold
+    is also what keeps two sources' ``provider.demo`` from mounting twice
+    under one namespace — and the folded name set, not the first catalog, is
+    what entry-point planes are XORed against.
 
     Args:
         collection: Injected discovery collection. Supplying one answers the
@@ -307,18 +315,26 @@ def create_stack(
 
     Raises:
         ValueError: ``molcrafts`` was disabled, or a retired plane was named.
-        ConfigurationError: A named harness source is missing a coordinate,
-            or the activated commit has no tree on disk. A ``ValueError``
-            subclass, as are ``CatalogError`` and ``OverlayLoadError``.
-        CatalogError: The checkout's ``harness.toml`` failed the catalog
+        ConfigurationError: A named harness source cannot be served. Four
+            ways: an entry is missing a coordinate; an entry's ``name`` cannot
+            name that source's activation pointer file, because it is empty,
+            reserved, absolute or carries a path separator (see
+            :func:`molmcp.harness.pointer_path`); two entries share a name,
+            compared case-insensitively because both spellings resolve to one
+            pointer file on darwin and on Windows; or a source's activated
+            commit has no tree on disk. A ``ValueError`` subclass, as are
+            ``CatalogError`` and ``OverlayLoadError``.
+        CatalogError: A checkout's ``harness.toml`` failed the catalog
             grammar, or asks for a capability token this runtime does not
-            implement. Raised out of either arm's catalog read — see
-            :func:`~molmcp.components.load_harness_catalog`.
+            implement. Raised out of either arm's fold — see
+            :func:`~molmcp.components.load_harness_catalog`. One bad catalog
+            fails the serve rather than being skipped in favour of its
+            neighbours.
         OverlayLoadError: A checkout overlay component's factory returned
             something that is not a capability overlay — see
             ``molmcp.runtime._session_capability_overlays``.
-        ActivationVersionError: The activation pointer file exists but is not
-            a version-1 record. Alone among these it is *not* a
+        ActivationVersionError: A source's activation pointer file exists but
+            is not a version-1 record. Alone among these it is *not* a
             ``ValueError``: a pointer this process cannot parse is not a
             configuration mistake it could serve without.
     """
@@ -332,18 +348,26 @@ def create_stack(
     build_overlays = collection is None
     enumerate_planes = providers is None and discover_entry_points
     plane_config: AppConfig | str | Path | None = config
-    checkout: Checkout | None = None
-    if (build_overlays or enumerate_planes) and _harness_locator():
-        # Resolving here rather than in _activated_checkout keeps the cache
+    checkouts: tuple[Checkout, ...] = ()
+    if (build_overlays or enumerate_planes) and (sources := _harness_locator()):
+        # Resolving here rather than in activated_checkouts keeps the cache
         # root the *same* already-resolved root the collection indexes under.
         plane_config = _resolve_config(config)
-        checkout = _activated_checkout(plane_config)
+        checkouts = activated_checkouts(plane_config, sources)
 
     extras: tuple[object, ...] = ()
-    if build_overlays and checkout is not None:
-        extras = _session_capability_overlays(
-            _checkout_components(checkout, ComponentKind.OVERLAY),
-            checkout.tree,
+    if build_overlays and checkouts:
+        # ``_session_capability_overlays`` resolves each seed's import root
+        # under one tree, so N checkouts is N calls concatenated in source
+        # order — not one call over a flattened spec list, which would resolve
+        # the second source's seeds under the first source's tree.
+        overlay_fold = fold_components(checkouts, ComponentKind.OVERLAY)
+        extras = tuple(
+            overlay
+            for checkout in overlay_fold.checkouts
+            for overlay in _session_capability_overlays(
+                overlay_fold.specs_from(checkout.source), checkout.tree
+            )
         )
 
     parent = create_plane(
@@ -363,8 +387,13 @@ def create_stack(
     elif not enumerate_planes:
         mounted = []
     else:
-        workers = _checkout_planes(checkout)
-        from_checkout = {worker.name for worker in workers}
+        provider_fold = fold_components(checkouts, ComponentKind.PROVIDER)
+        workers = checkout_planes(provider_fold)
+        # The exclusion set is an *output of the fold*, not a set built back
+        # out of the constructed workers: a contested ``provider.demo`` is
+        # kept once, so the name it claims against the entry points is claimed
+        # once, whichever source won it.
+        from_checkout = provider_fold.names
         # One enumeration, and the same one this arm has always used.
         # ``only_available=True`` drops a plane whose optional upstream
         # package is not installed — precisely the plane a checkout is there
@@ -468,6 +497,26 @@ def _register_core_routing(mcp: FastMCP) -> None:
         return route_task(task)
 
 
+def _resolve_config(config: AppConfig | str | Path | None) -> AppConfig:
+    """Accept either an already-resolved config or something to load one from.
+
+    Resolution is this module's job and stays here. :mod:`molmcp.harness` takes
+    an :class:`AppConfig` already resolved, so that the harness store and its
+    pointers land under the very same cache root the collection indexes under
+    rather than under a root a second resolution might disagree about.
+
+    Args:
+        config: An :class:`AppConfig`, or anything
+            :func:`~molmcp.config.load_config` accepts.
+
+    Returns:
+        The configuration, resolved.
+    """
+    if isinstance(config, AppConfig):
+        return config
+    return load_config(config)
+
+
 def _resolve_collection(
     collection: CollectionIndex | None,
     config: AppConfig | str | Path | None,
@@ -497,11 +546,13 @@ def _harness_locator() -> tuple[HarnessSource, ...]:
     Returns:
         Every named source in file order, each with all three coordinates
         filled in, or the empty tuple when no source is named — which is the
-        un-harnessed configuration, not a failure. Serving needs to know only
-        *that* a harness was named: which commit to serve comes from the
-        activation pointer, so ``owner`` / ``repo`` / ``ref`` identify the
-        repository to whatever later fetches from it, and no caller on this
-        path reads their values.
+        un-harnessed configuration, not a failure. File order is carried
+        through :func:`~molmcp.harness.activated_checkouts` into the fold, so
+        it is the operator's priority control over a component two sources
+        both declare. Only ``name`` is read on this path — it selects that
+        source's activation pointer, which is where the commit to serve comes
+        from; ``owner`` / ``repo`` / ``ref`` identify the repository to
+        whatever later fetches from it, and nothing here reads their values.
 
     Raises:
         ConfigurationError: An entry sets some but not all of

@@ -10,7 +10,8 @@ criteria:
       "/etc/passwd", "" and a reserved name; each raises ConfigurationError
       whose message contains the offending name, and no file is created
       outside the cache root.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-002
     summary: pointer_path maps distinct names to distinct files under the root
     type: code
@@ -18,7 +19,8 @@ criteria:
       pointer_path(root, "official") == root / "harness.official.pointer" and
       pointer_path(root, "private") != pointer_path(root, "official"), both
       resolving under root.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-003
     summary: SourcedComponent pairs a source with an untouched ComponentSpec
     type: code
@@ -27,7 +29,8 @@ criteria:
       spec: ComponentSpec; a test asserts sc.spec.id == "provider.demo" for a
       component folded out of a source named "official", and assignment to
       either field raises.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-004
     summary: fold_components is first-wins on spec.id in source order
     type: code
@@ -36,7 +39,8 @@ criteria:
       fold_components(...).kept holds exactly one SourcedComponent for that id
       and its source is the first checkout's; distinct ids from both sources
       are all kept, ordered by source then catalog order.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-005
     summary: A displaced component is reported, never stored
     type: code
@@ -45,7 +49,8 @@ criteria:
       the losing source and the contested id. There is no `displaced` field:
       it would have had no production reader, and the repo's own first-wins
       precedents drop losers without storing them.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-006
     summary: activated_checkouts is covered by a test that fakes no seam
     type: code
@@ -58,7 +63,8 @@ criteria:
       exactly one commits/ directory exists under the cache root, and a source
       whose pointer file is absent is skipped while its neighbour still yields
       a checkout.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-007
     summary: activated_checkouts errors name the source they came from
     type: code
@@ -69,7 +75,8 @@ criteria:
       names differ only in case ("official" / "Official") - on darwin and
       Windows those map to one pointer file, which is the hazard the check
       exists for.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-008
     summary: The _wire seam answers a per-source current
     type: code
@@ -81,7 +88,8 @@ criteria:
       pointer path, a second SHA constant sits beside _SHA, and a test asserts
       one source activated and one not produces one bind per source with
       catalogs read only for the activated one.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-009
     summary: Two sources shipping provider.demo mount one demo namespace
     type: code
@@ -91,7 +99,8 @@ criteria:
       constructed, "demo_worker" resolves once in the composed tool names, the
       first source's spec won, and an entry-point plane named "demo" is still
       excluded by the folded name set.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-010
     summary: create_stack consumes every activated source, reading settings once
     type: code
@@ -111,7 +120,8 @@ criteria:
       binds and 1xN or 2xN catalog reads; and
       test_the_locator_is_read_once_with_the_project_root still passes
       unmodified.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-011
     summary: The pinned boundary and precedent tests stay green unmodified
     type: code
@@ -128,7 +138,8 @@ criteria:
       clause is deliberately not used - it names no base, so it passes
       vacuously either way, which is the golden-not-self-proving failure this
       chain already recorded once.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-012
     summary: create_stack's Raises list and the harness doc match the new behaviour
     type: code
@@ -145,7 +156,8 @@ criteria:
       src/molmcp/settings.py:128-130 (HarnessSource.ref names "the activation
       pointer" in the singular), or the spec states why a per-ref sentence
       stays singular.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-014
     summary: A stale single-source pointer is named, never silently read
     type: code
@@ -156,14 +168,16 @@ criteria:
       is never read. Nothing in src/ writes that file (no caller of
       Activation.stage/promote/rollback exists), which is why it is warned
       about rather than migrated.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
   - id: ac-013
     summary: Full check and test suite pass from a cold ruff cache
     type: code
     pass_when: |
       rm -rf .ruff_cache && uv run ruff check src tests &&
       uv run ruff format --check src tests && uv run pytest -v all succeed.
-    status: pending
+    status: verified
+    last_checked: 2026-09-09
 ---
 
 # Acceptance criteria

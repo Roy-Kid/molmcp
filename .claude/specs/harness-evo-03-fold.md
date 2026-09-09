@@ -1,6 +1,6 @@
 ---
 title: Fold several harness sources into one served checkout set
-status: in-progress
+status: done
 created: 2026-09-08
 ---
 
@@ -108,15 +108,15 @@ suite green — otherwise a reviewer cannot tell moved lines from changed ones, 
 traversal guard, a security fix, would be buried in the noise. Everything after it is
 behaviour.
 
-- [ ] Move `_Checkout`, `_activated_checkout`, `_checkout_components`, `_checkout_planes`, `_import_root` and `SUPPORTED_CAPABILITIES` from src/molmcp/server.py into a new src/molmcp/harness.py unchanged, repoint the five `_wire` seam targets and `tests/test_stack.py:768-780` to `molmcp.harness`, and rewrite the tests/test_stack.py:78-81 comment — no behaviour change, suite green, one commit
-- [ ] Write failing unit tests for `pointer_path`, `SourcedComponent` and `fold_components` (tests/test_harness.py -> `TestPointerPath`, `TestSourcedComponent`, `TestFoldComponents`)
-- [ ] Implement `Checkout`, `SourcedComponent`, `ComponentFold`, `fold_components` and `pointer_path` in src/molmcp/harness.py with Google-style docstrings stating the first-wins rule and the segment guard
-- [ ] Write failing unit tests driving the real `activated_checkouts` against an on-disk store and hand-written per-source pointer files, with no `_wire` seam (tests/test_harness.py -> `TestActivatedCheckouts`)
-- [ ] Repoint the `_wire` seam's **five** `monkeypatch.setattr` targets (`Activation`, `ImmutableGitStore`, `GitHubTransport`, `load_harness_catalog`, `WorkerProvider`) from `molmcp.server` to `molmcp.harness`, rewrite the tests/test_stack.py:78-81 comment whose single-composition-root reason stops being true, and extend the seam to a per-source `current` mapping with a second SHA constant beside `_SHA`
-- [ ] Write failing multi-source composition tests in tests/test_stack.py (split `test_two_sources_still_bind_exactly_one_store_root`, per-source bind paths, N catalog reads, mixed activated/unactivated, two-source plane-name collision)
-- [ ] Rewrite the moved functions as plural (`activated_checkouts`, `fold_components`, `checkout_planes`), add the per-source pointer and the legacy-pointer notice, and rewire the three `create_stack` arms, extending its `Raises:` list
-- [ ] Update the resolution paragraph of docs/concepts/harness.md to name per-source pointers, the first-wins fold, and the shared store
-- [ ] Run full check + test suite
+- [x] Move `_Checkout`, `_activated_checkout`, `_checkout_components`, `_checkout_planes`, `_import_root` and `SUPPORTED_CAPABILITIES` from src/molmcp/server.py into a new src/molmcp/harness.py unchanged, repoint the five `_wire` seam targets and `tests/test_stack.py:768-780` to `molmcp.harness`, and rewrite the tests/test_stack.py:78-81 comment — no behaviour change, suite green, one commit
+- [x] Write failing unit tests for `pointer_path`, `SourcedComponent` and `fold_components` (tests/test_harness.py -> `TestPointerPath`, `TestSourcedComponent`, `TestFoldComponents`)
+- [x] Implement `Checkout`, `SourcedComponent`, `ComponentFold`, `fold_components` and `pointer_path` in src/molmcp/harness.py with Google-style docstrings stating the first-wins rule and the segment guard
+- [x] Write failing unit tests driving the real `activated_checkouts` against an on-disk store and hand-written per-source pointer files, with no `_wire` seam (tests/test_harness.py -> `TestActivatedCheckouts`)
+- [x] Repoint the `_wire` seam's **five** `monkeypatch.setattr` targets (`Activation`, `ImmutableGitStore`, `GitHubTransport`, `load_harness_catalog`, `WorkerProvider`) from `molmcp.server` to `molmcp.harness`, rewrite the tests/test_stack.py:78-81 comment whose single-composition-root reason stops being true, and extend the seam to a per-source `current` mapping with a second SHA constant beside `_SHA`
+- [x] Write failing multi-source composition tests in tests/test_stack.py (split `test_two_sources_still_bind_exactly_one_store_root`, per-source bind paths, N catalog reads, mixed activated/unactivated, two-source plane-name collision)
+- [x] Rewrite the moved functions as plural (`activated_checkouts`, `fold_components`, `checkout_planes`), add the per-source pointer and the legacy-pointer notice, and rewire the three `create_stack` arms, extending its `Raises:` list
+- [x] Update the resolution paragraph of docs/concepts/harness.md to name per-source pointers, the first-wins fold, and the shared store
+- [x] Run full check + test suite
 
 ## Testing strategy
 

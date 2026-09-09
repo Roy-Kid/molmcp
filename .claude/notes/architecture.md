@@ -76,9 +76,18 @@ _Generated 2026-09-08 by /mol:map._
   providers, discover_entry_points, extras=(), enable_path_safety,
   enable_response_limit, response_limit_bytes, validate_annotations,
   instructions)`; `create_stack` has the same keywords minus `extras`, plus
-  `disable`. Private harness arms: `_Checkout`, `_HARNESS_KEYS`,
-  `_harness_locator`, `_activated_checkout`, `_checkout_components`,
-  `_checkout_planes`, `_import_root`, `_resolve_provider`.
+  `disable`. Private arms: `_HARNESS_KEYS`, `_harness_locator`,
+  `_resolve_config`, `_resolve_provider`. The harness resolution itself moved
+  out to `molmcp.harness` (commit `3c407a8`).
+- **`molmcp.harness`** — L2 resolver for N harness sources, imported by
+  `server.py` only. `Checkout(sha, tree, source)`, `SourcedComponent(source,
+  spec)`, `ComponentFold(checkouts, kept)` with `names` / `specs_from`,
+  `fold_components(checkouts, kind)` (first-wins on `spec.id` in source order,
+  losers logged), `activated_checkouts(config, sources)` (one shared store,
+  one activation pointer per source), `checkout_planes(fold)`,
+  `pointer_path(root, name)` (segment guard), and `SUPPORTED_CAPABILITIES`.
+  On the heavy side of the child-safe import boundary: it carries
+  `WorkerProvider`.
 - **`molmcp.runtime`** — `build_collection(config, registry=None, *, extras=())`,
   `resolved_cache_dir(config) -> Path`, `config_summary`, `OverlayLoadError`;
   private `_session_capability_overlays`.

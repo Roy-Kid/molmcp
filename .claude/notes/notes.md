@@ -252,3 +252,25 @@ list` 守卫不再触发，直接 append 裸字符串。两者都在 `write_sett
 类型下谁还在拒绝、谁开始放行。类型不只是校验规则，它同时是这些动词的调度键。
 配套：元素是对象的 list 用 `_OBJECT_LISTS` 声明，两个字符串动词读表拒绝，
 不在函数体里写死键名。
+
+<!-- mol:note:topic:harness-layers-replace-not-union -->
+## [2026-09-09] harness 列表跨层是「整份替换」，并集已放弃
+
+链 01 把「跨层取并集」记为欠链 03 的债，但链 01 同时发布了钉住相反行为的东西：
+`tests/test_settings.py` 的 `test_harness_is_a_list_setting_with_no_merge_channel`
+与 `test_the_most_specific_layer_replaces_the_list_rather_than_merging`、
+`settings.py` 里 `harness` 不属于任何合并通道、以及 `docs/concepts/harness.md`
+的相应段落——最后一条还是构建强制的（`test_harness_catalog_fixture.py` 会解析
+该页 JSON 并逐条构造真的 `HarnessSource`）。
+
+链 03 的决定：**并集放弃，不是再往后推**。最具体的层整份胜出是自洽规则，没有任何
+东西需要打破它；而 `harness` 不入任何合并通道，正是这条规则不用写代码就成立的原因
+（`load_settings` 的默认分支「最后一次赋值胜出」+ `settings_layers` 低优先级在前）。
+
+注意与 `_MERGED_LISTS` 成员方向相反：`excludes` / `knowledgeScope` 等用 `extend`
+低→高累积，所以**用户文件**的条目活下来；`harness` 是**local 文件**的列表整份取代
+用户文件的。两个 list 设置相隔十几行、方向相反，`ac-006` 在同一个测试里同时断言两者
+就是为了让这件事写在测试里而不是留给人在安装时踩。
+
+**Rule**：想让 harness 跨层合并之前，先改上面那两条测试和那页构建强制的文档；
+它们是这个决定的落点，不是随手可绕的断言。

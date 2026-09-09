@@ -123,8 +123,8 @@ class HarnessSource:
         owner: GitHub account or organization; ``""`` while unwritten.
         repo: GitHub repository name; ``""`` while unwritten.
         ref: Branch or tag a commit is resolved from — not the commit being
-            served, which the activation pointer under the cache directory
-            names. ``""`` while unwritten.
+            served, which this entry's own activation pointer under the cache
+            directory names. ``""`` while unwritten.
 
     Raises:
         ValueError: If a field is not a string, carries whitespace, is an

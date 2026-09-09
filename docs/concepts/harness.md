@@ -48,10 +48,21 @@ of the two was lying. Keeping identity outside the file makes that
 disagreement unrepresentable.
 
 Which SHA an install is running is recorded in an **activation pointer**: a
-small JSON file beside the harness store under `cacheDir`, naming three SHAs —
-`current` (in effect), `staged` (accepted, waiting), and `previous` (what a
-rollback would restore). `molmcp.components.Activation` is the only thing that
-moves it, and serving only ever *reads* it.
+small JSON file naming three SHAs — `current` (in effect), `staged` (accepted,
+waiting), and `previous` (what a rollback would restore).
+`molmcp.components.Activation` is the only thing that moves one, and serving
+only ever *reads* them.
+
+There is one such file per **harness source** — one repository this install has
+been told it may take a harness from, named in its settings file and described
+under [Where a harness comes from](#where-a-harness-comes-from) below. A source
+named `official` owns `harness.official.pointer`; a source named `private` owns
+`harness.private.pointer` beside it. Both sit in the directory the `cacheDir`
+setting names, next to one shared store — `cacheDir/harness` — which is where
+the unpacked commit trees themselves live, whichever source activated them. So
+each source is activated, and rolled back, on its own, and "which SHA is this
+install running?" has one answer per source rather than a single answer for the
+install.
 
 ## `official`, `gate`, `canary` are labels on a SHA
 
@@ -100,7 +111,7 @@ so here it is with its reasons.
 | Authoritative list | the `molmcp.providers` entry-point group | one commit's `harness.toml` |
 | Unit | an installed Python distribution | a Git SHA |
 | Changes when | somebody releases to PyPI | somebody pushes a commit |
-| Discovered by | `importlib.metadata` entry points | reading the activated commit's tree |
+| Discovered by | `importlib.metadata` entry points | reading each activated commit's tree |
 
 Concretely: none of the following three exists today, and none of them may be
 added later without abandoning the split above.
@@ -117,7 +128,8 @@ added later without abandoning the split above.
 
 A harness *may* contribute a plane — that is what a `provider` component is —
 but the plane is named by the component's own `name`, and it is mounted for
-this process out of the activated tree. It never becomes an entry point, and
+this process out of the activated tree that declared it. It never becomes an
+entry point, and
 the catalog id (`provider.bench`) is not the plane id (`bench`); mounting under
 the id would namespace its tools as `provider.bench_open`.
 
@@ -197,8 +209,9 @@ example cannot quietly drift away from the grammar it is illustrating.
 **`harness.toml` is never auto-loaded from the working directory.** The
 filename is joined onto a root the caller passes —
 `Path(root) / "harness.toml"` in `molmcp/components/catalog.py`, the one place
-in `src/` where that name is resolved at all. The only root molmcp itself ever
-passes is the tree of the commit the activation pointer names. `molmcp serve`
+in `src/` where that name is resolved at all. The only roots molmcp itself ever
+passes are the trees of the commits its activation pointers name — one root per
+activated source, read in the order the settings file names them. `molmcp serve`
 does not look beside itself for a catalog, and neither does `molmcp init`;
 `molmcp init <host> --source PATH` takes the checkout as an explicit argument
 and probes for nothing.
@@ -233,8 +246,8 @@ you refer to the entry, and it is the one key an entry may not leave out.
 `owner` and `repo` are the two halves of a GitHub repository path, kept as
 separate keys instead of a single `owner/repo` string so that nothing on this
 path has to parse one. `ref` is the branch or tag a commit is *resolved from* —
-it is not the commit being served, which is the one the activation pointer
-names.
+it is not the commit being served, which is the one that entry's own activation
+pointer names.
 
 The three coordinates may be left out while an entry is still being written. An
 entry carrying only a `name` loads and is stored exactly as written; what it
@@ -245,10 +258,12 @@ from a default would mean fetching code from a repository nobody asked for.
 
 **Order is file order, and it is a contract rather than an accident.** Entries
 are read first to last as the file writes them, and the first entry that offers
-something is the one that answers for it. Nothing resolves a component out of a
-source yet — this list is the address book that the code doing that will read —
-but the order is written down now so that the answer never comes to depend on
-the order some dictionary happened to iterate in.
+something is the one that answers for it. That is not a promise about some
+later release: it is how a piece two sources both ship is settled today, and
+[What serving does with the list](#what-serving-does-with-the-list) below is
+the whole of the rule. Writing the order down as a contract is what keeps the
+answer from coming to depend on the order some dictionary happened to iterate
+in.
 
 **Across settings files, the most specific list replaces the others; it does
 not merge.** A project's `.molmcp/settings.json` outranks the user file and
@@ -274,6 +289,79 @@ load.)
 An install whose `harness` key is absent, or is an empty list, simply has no
 harness, and serves exactly as it did before any of this existed. That is a
 normal configuration, not a degraded one.
+
+### What serving does with the list
+
+`molmcp serve` reads the list whole and gives every entry its own turn. A source
+that has nothing to contribute costs its neighbours nothing.
+
+**Each source is activated on its own.** For every entry, in file order, serving
+reads that entry's activation pointer — `harness.<name>.pointer` under
+`cacheDir`, the per-source file introduced [near the top of this
+page](#identity-is-a-git-sha) — and serves the commit its `current` names. A
+source whose pointer file does not exist yet, or whose pointer activates
+nothing, contributes nothing and is **skipped**; the entries around it still
+serve. Nothing is fetched and no pointer is written while serving, because
+moving a pointer belongs to the commands that were asked to change what is
+activated. The one thing that is *not* shrugged off is a pointer naming a
+commit whose tree was never unpacked into the store: that stops the serve with
+a message naming the source, the SHA and the pointer file, rather than
+re-fetching something nobody asked for at start-up.
+
+**One store, shared by every source.** The unpacked trees all live in the single
+`cacheDir/harness` directory; only the pointers multiply. That is a correctness
+rule and not a disk-space saving. The store keeps each tree under its SHA alone
+and records beside it which repository published that SHA, so a SHA a second
+repository lays claim to is refused rather than quietly overwritten: two
+repositories cannot both own one commit in one store. Give each source a store
+root of its own instead and every tree already published becomes unreachable to
+the next source that could have shared it.
+
+**Two entries may not share a name, compared without regard to case.**
+`official` and `Official` look like two entries to a person, but on macOS and
+Windows they name one `harness.official.pointer` file, so the second would
+silently serve whatever the first activated. Serving stops with a message
+naming both spellings. For the same reason a name that cannot be a filename —
+one holding a `/` or a `\`, or one shaped like an absolute path — is refused,
+naming the entry. Nothing else about a name is prescribed: it is yours to
+choose, exactly as an index source's name is.
+
+**A component two sources both declare is kept once, and the earlier entry
+keeps it.** Every activated commit's catalog is read, the components of the kind
+being served are collected in source order, and the first source to claim a
+given component id — `provider.bench`, `overlay.molpy` — is the one that keeps
+it. That collecting-with-a-winner step is a **fold**: several lists become one,
+and the rule for a contested key is fixed in advance rather than settled by
+whichever list happened to be read last. The displaced declaration is not
+served, and it is not silently dropped either: molmcp logs a warning naming the
+winning source, the losing source and the contested id, so an operator who did
+not intend the overlap learns it from the log rather than from behaviour they
+cannot account for. Reordering the list, or dropping the component from one of
+the two catalogs, is the whole of the fix — file order is the only priority
+control there is, and there is no per-source override.
+
+For a `provider` component that rule is doing more than tidying up. A component
+id is `provider.<name>` and the plane is mounted under the `<name>` half, so two
+sources both shipping `provider.demo` are two planes claiming one namespace, and
+one of them would be mounted over the other. Keeping the id once is what stops
+the pair from mounting twice.
+
+Bundles are **not** folded across sources. A bundle is a group of ids inside one
+catalog, every catalog carries its own `daily` and `dev`, and nothing on the
+serving path reads one — what gets served is selected by component kind. Three
+activated sources are three catalogs each with its own `daily`, not one merged
+`daily`.
+
+**A pointer file left over from before sources were activated by name is named,
+never read.** Such an install has a single `harness.pointer` under `cacheDir`
+with no source name in it. molmcp does not read it, and does not migrate it:
+when that file is present and no named source has a pointer of its own, molmcp
+logs one warning naming the file and serves with no harness at all.
+Migration would be machinery for a population that is very nearly empty —
+molmcp has no verb that activates a commit yet, so nothing in the product ever
+wrote that file, and it can only exist where someone wrote it by hand. Deleting
+it, and activating the sources you want under their own names, is the whole
+recovery.
 
 ### Authoring an entry, and what to do if you mistype one
 

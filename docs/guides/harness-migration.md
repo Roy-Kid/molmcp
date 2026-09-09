@@ -63,8 +63,9 @@ Two placement rules follow, and both are load-bearing:
   repository would be the first thing to load it.
 - Nothing auto-loads it, or any catalog, from the working directory. The
   filename is joined onto a root the caller passes in — one place in `src/`,
-  `molmcp/components/catalog.py` — and the only root molmcp passes is the tree
-  of the commit the activation pointer names.
+  `molmcp/components/catalog.py` — and the only roots molmcp passes are the
+  trees of the commits its activation pointers name, one per activated source,
+  in the order the settings file lists them.
 
 ## 4. Put the licence table on the concept page
 
