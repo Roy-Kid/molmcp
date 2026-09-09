@@ -489,6 +489,7 @@ no entry point. A harness is where tools come from, not a tool.
 
 ## Read next
 
+- [Iterate on a harness from a checkout](../guides/iterate-on-a-harness.md) — the three-command loop, starting from a repository on your own disk
 - [Retiring the old harness marketplace](../guides/harness-migration.md) — the exit runbook
 - [Providers](providers.md) — the other registry, the entry-point one
 - [Provider design](provider-design.md) — what earns a tool slot on any plane

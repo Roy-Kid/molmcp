@@ -274,3 +274,31 @@ list` 守卫不再触发，直接 append 裸字符串。两者都在 `write_sett
 
 **Rule**：想让 harness 跨层合并之前，先改上面那两条测试和那页构建强制的文档；
 它们是这个决定的落点，不是随手可绕的断言。
+
+<!-- mol:note:topic:store-not-git-backed -->
+## [2026-09-09] harness store 刻意不用 git 支撑，理由和触发阈值
+
+问过一次：harness 仓本来就是 clone 下来的，`ImmutableGitStore` 为什么还要把每个
+commit 解压成一份完整的树？实测过开销：demo 仓每个 commit 644K，真实 harness 仓
+`.git` 12M / 工作区 13M，所以激活 N 个版本约等于 N 份工作区，而 git 用共享对象只需
+一份历史。空间上 git 明显更省，`git worktree` 还能让多个 commit 同时物化（盲测 A/B
+正需要两棵树并存），回滚也能到任意 commit 而不只是 `previous`。
+
+**仍然不做，三个代价换不回来：**
+
+1. **不可变性会丢。** 现在的树解压一次后永不改动——这是 `ImmutableGitStore` 里
+   "Immutable" 的实质，服务中的 harness 不能被就地篡改。worktree 是活的检出。
+2. **远程路径会多一个 git 依赖。** 今天远程是纯 HTTP + tarfile，没有 git 二进制也能
+   跑；改成 clone 就必须有，且要处理 `--depth` / partial clone。
+3. **落盘契约要变。** `<cache>/harness/commits/<sha>/tree` 与 `metadata.json` 的
+   provenance + `ShaConflictError` 是 CLAUDE.md 列为「不可随意变更」的那类，需要
+   bump、旧目录处理、迁移路径。
+
+还有一个不显然的坑：直接在用户的工作检出里 `git worktree add`，会把 molmcp 的
+worktree 写进**用户仓库**的 `.git/worktrees`。干净做法是 molmcp 在缓存里维护自己的
+裸镜像（本地源可 `git clone --local` 硬链对象），再从镜像开 worktree——但那是又一个
+要维护的东西。
+
+**Rule**：在有人真的激活到几十个版本、或者 `molmcp cache` 清理不足以应付之前，不要
+重开这个话题。真要做，先写 spec：上面第 1 条是真会丢的性质，必须先说清用什么补
+（worktree 建完 `chmod -R a-w`？还是接受可改并说明为什么可以），而不是默认它无所谓。

@@ -27,6 +27,7 @@ nav = [
         { "Write a Provider" = "guides/write-a-provider.md" },
         { "MolVis workbench" = "guides/molvis-workbench.md" },
         { "Adopt a data directory" = "guides/adopt-a-data-directory.md" },
+        { "Iterate on a harness" = "guides/iterate-on-a-harness.md" },
         { "Harness migration" = "guides/harness-migration.md" },
         { "Security" = "guides/security.md" },
     ] },
