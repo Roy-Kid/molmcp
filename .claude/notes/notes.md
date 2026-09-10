@@ -302,3 +302,27 @@ worktree 写进**用户仓库**的 `.git/worktrees`。干净做法是 molmcp 在
 **Rule**：在有人真的激活到几十个版本、或者 `molmcp cache` 清理不足以应付之前，不要
 重开这个话题。真要做，先写 spec：上面第 1 条是真会丢的性质，必须先说清用什么补
 （worktree 建完 `chmod -R a-w`？还是接受可改并说明为什么可以），而不是默认它无所谓。
+
+<!-- mol:note:topic:evaluator-splits-harness-from-project -->
+## [2026-09-10] 盲测评估器：机制随 harness 走，用例归项目
+
+`/mol:evo`（skill）+ `harness-actor` + `harness-observer` 是 **harness 组件**，作为
+`evo` bundle 随 harness 安装；`scripts/harness_cases.py` 与 `scripts/harness_eval.py`
+留在 molmcp。
+
+分界线是 `harness_cases.py` 自己写下的那句：「Every case tests a rule `CLAUDE.md`
+already states」。用例编码的是**某个仓库**的规则——molmcp 的用例拿到 molpy 上就是
+胡话。而盲测协议（manifest 先写、actor 只读且不见判据、observer 只见标签、只有
+Python 门能判胜负）在哪个仓库都一样。
+
+所以 skill 不许硬编码 molmcp 的路径：它声明自己需要什么（带 `id` / `graduated` /
+`task` / `expect` / `forbid` 的用例集，加一个把 manifest + observation 变成裁决的
+命令），把 molmcp 那两个文件只当**示例**写。项目两样都没有 → 停下来说清楚。
+
+**Rule**：往 evaluator 里加东西前先问它是协议还是判据。协议进 harness 仓，判据留
+项目仓。skill 里出现第二个写死的 molmcp 路径，就是这条被违反了。自己编用例来填空
+等于什么都没测量。
+
+**另见**：冠军/挑战者不是「两个激活的 commit」——激活指针每源只有一个 `active`。
+成对的是 `previous`（冠军）与 `active`（挑战者），靠 store 的发布不可变且只增，
+两棵树才能并存被读。`worse_tokens` / `worse_latency` 这条路走不到：两侧都钉死为 0。

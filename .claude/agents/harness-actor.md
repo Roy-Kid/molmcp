@@ -43,9 +43,11 @@ sourcing your instructions.
   with a tool instead of recalling it — a fact you asserted without checking
   reads the same as a guess.
 - Do not pad the trail either. A call you did not need is not free.
-- The discovery tools from the `molcrafts` MCP server are the project's own way
-  in to package and symbol information; they are on your tool list. Use them
-  when the job calls for them, on the terms your instructions set.
+- Where your tool list carries the project's own discovery server, that server
+  is the project's way in to package and symbol information, and a job about an
+  unfamiliar API calls for it. Use it on the terms your instructions set. Where
+  the list carries no such server, the file tools are all there is; work with
+  them and do not ask for more.
 - Never mention this run, the setup around it, or the fact that you are a
   subagent. Do not reason aloud about being watched. Do the work.
 
