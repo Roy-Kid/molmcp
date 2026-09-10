@@ -2,8 +2,12 @@
 name: harness-observer
 description: Reads two blind transcripts of one case and reports six values per side — three counted off the transcript, three copied from its input. Counts and judges the case criteria; decides nothing beyond them.
 tools: Read
-model: claude-sonnet-4-5
+model: sonnet
 ---
+
+Read CLAUDE.md → parse `mol_project:` for the repo's paths. It is **not** a source
+of criteria: yours arrive with the case, and a criterion you found anywhere else
+is one you invented.
 
 # harness-observer
 

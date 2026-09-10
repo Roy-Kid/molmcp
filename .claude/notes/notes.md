@@ -326,3 +326,19 @@ Python 门能判胜负）在哪个仓库都一样。
 **另见**：冠军/挑战者不是「两个激活的 commit」——激活指针每源只有一个 `active`。
 成对的是 `previous`（冠军）与 `active`（挑战者），靠 store 的发布不可变且只增，
 两棵树才能并存被读。`worse_tokens` / `worse_latency` 这条路走不到：两侧都钉死为 0。
+
+<!-- mol:note:topic:harness-agents-await-their-new-owner -->
+## [2026-09-10] `.claude/agents/harness-*.md` 是临时副本,等 PR 落地后删
+
+`harness-actor` / `harness-observer` 的正主已经是
+`Roy-Kid/molcrafts-harness`(PR #1,`plugins/mol/agents/`)。molmcp 树里这两份是
+同内容副本,只为在 PR 合并前不分叉。
+
+**Rule**:PR #1 合并后,删掉 molmcp 的 `.claude/agents/harness-actor.md` 与
+`harness-observer.md`,把 `tests/test_harness_agents.py:26-29` 从 `REPO/.claude/agents`
+改成读已安装位置(或改成对 harness 仓的契约测试)。在那之前改这两个文件,
+**两边都要改**——只改一边就是本条被违反。
+
+`scripts/harness_cases.py` / `scripts/harness_eval.py` / `src/molmcp/evolution/`
+不搬:那是判据和裁决门,归项目。见
+[[evaluator-splits-harness-from-project]]。
