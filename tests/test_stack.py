@@ -15,7 +15,7 @@ import pytest
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from molmcp import CollectionIndex, cli, create_plane, create_stack, runtime, server
+from molmcp import CollectionIndex, create_plane, create_stack, runtime, server
 from molmcp import harness as harness_module
 from molmcp.components import (
     ALLOWED_REQUIRES,
@@ -24,9 +24,10 @@ from molmcp.components import (
     ComponentSpec,
     HarnessCatalog,
 )
+from molmcp.components.locator import LocatorError
 from molmcp.config import AppConfig, ConfigurationError
 from molmcp.provider_worker.worker import WorkerProvider
-from molmcp.settings import HarnessSource, Settings, SettingsError
+from molmcp.settings import HarnessSource, Settings
 
 
 class _Vis:
@@ -93,8 +94,8 @@ _SHA = "0123456789abcdef0123456789abcdef01234567"
 #: different commits, and a seam holding one ``current`` for all of them
 #: could not express that at all.
 _OTHER_SHA = "fedcba9876543210fedcba9876543210fedcba98"
-_SOURCE = HarnessSource(name="official", owner="molcrafts", repo="harness", ref="main")
-_OTHER = HarnessSource(name="private", owner="acme", repo="tooling", ref="trunk")
+_SOURCE = HarnessSource(name="official", locator="molcrafts/harness@main")
+_OTHER = HarnessSource(name="private", locator="acme/tooling@trunk")
 _CAPABILITIES = frozenset({"provider-sdk", "harness-catalog"})
 _SKILL = ComponentSpec(
     kind=ComponentKind.SKILL,
@@ -621,64 +622,28 @@ async def test_an_empty_source_list_serves_exactly_like_today(tmp_path, monkeypa
     assert "other_intree" not in names
 
 
-@pytest.mark.parametrize(
-    ("source", "missing"),
-    [
-        (HarnessSource(name="mine", owner="molcrafts"), ("repo", "ref")),
-        (HarnessSource(name="mine", owner="molcrafts", repo="harness"), ("ref",)),
-    ],
-)
-def test_a_partial_entry_names_the_entry_and_every_missing_field(
-    tmp_path,
-    monkeypatch,
-    source: HarnessSource,
-    missing: tuple[str, ...],
-):
-    """A half-authored entry is a ConfigurationError, not a guess.
+def test_an_empty_locator_cannot_construct():
+    """Half-authored coordinate entries are no longer representable."""
+    with pytest.raises((LocatorError, ValueError)):
+        HarnessSource(name="mine", locator="")
 
-    The entry's ``name`` is its completion address now that the settings
-    are a list, so the message has to carry it: "repo is not set" points at
-    no file position an operator can go and edit.
-    """
+
+def test_a_relative_locator_cannot_construct():
+    with pytest.raises((LocatorError, ValueError)):
+        HarnessSource(name="mine", locator="./checkout")
+
+
+def test_a_name_only_entry_cannot_construct():
+    with pytest.raises(TypeError):
+        HarnessSource(name="mine")
+
+
+def test_a_github_locator_without_a_ref_is_servable(monkeypatch):
+    """``owner/repo`` with no ``@ref`` is a complete GitHub origin."""
+    source = HarnessSource(name="official", locator="molcrafts/harness")
+    assert source.ref == ""
     _wire(monkeypatch, harness=(source,))
-    with pytest.raises(ConfigurationError) as excinfo:
-        create_stack(config=_config(tmp_path))
-    message = str(excinfo.value)
-    assert source.name in message
-    for field_name in missing:
-        assert field_name in message
-    assert not isinstance(excinfo.value, SettingsError)
-
-
-def test_a_named_entry_with_no_coordinates_is_an_error_not_an_unset_harness(
-    tmp_path, monkeypatch
-):
-    """Naming a source is a claim; the empty *list* is the way to unset."""
-    _wire(monkeypatch, harness=(HarnessSource(name="mine"),))
-    with pytest.raises(ConfigurationError) as excinfo:
-        create_stack(config=_config(tmp_path))
-    message = str(excinfo.value)
-    assert "mine" in message
-    for field_name in ("owner", "repo", "ref"):
-        assert field_name in message
-
-
-def test_an_incomplete_second_entry_raises_after_a_complete_first(
-    tmp_path, monkeypatch
-):
-    """No entry is ever skipped: serving past one would serve the wrong repo.
-
-    Skipping the unfinished entry and carrying on from its neighbour is
-    refused for the reason a built-in default is refused — it would serve
-    code from a repository the operator did not select.
-    """
-    _wire(monkeypatch, harness=(_SOURCE, HarnessSource(name="private", owner="acme")))
-    with pytest.raises(ConfigurationError) as excinfo:
-        create_stack(config=_config(tmp_path))
-    message = str(excinfo.value)
-    assert "private" in message
-    assert "repo" in message
-    assert "ref" in message
+    assert server._harness_locator() == (source,)
 
 
 def test_two_complete_sources_are_returned_in_file_order(monkeypatch):
@@ -736,28 +701,18 @@ def test_two_sources_bind_one_activation_pointer_each(tmp_path, monkeypatch):
     ]
 
 
-# -- completeness is per origin, not per coordinate -------------------------
+# -- completeness is the locator, not a coordinate triple -------------------
 #
-# ``HarnessSource`` grew a fifth field, ``path``, and with it a second way to
-# be a complete entry: ``owner``/``repo``/``ref`` name a GitHub coordinate,
-# ``path`` names a checkout already on disk, and the type refuses both at
-# once. Serve-time completeness has to read the same two shapes. A rule that
-# only ever counts the three coordinates reports a local source as missing
-# all three, which is how a ``path``-only entry — the only way to name a
-# harness before it is published anywhere — cannot serve at all.
+# A GitHub locator is complete without a path. A local locator is an
+# absolute or ``~/`` path that names a checkout. Relative spellings cannot
+# construct.
 
 
-def test_a_local_source_with_a_path_and_no_coordinates_is_complete(
-    tmp_path, monkeypatch
-):
-    """A checkout on disk is an origin; the empty coordinates are not missing.
-
-    The three coordinates are empty on a local entry *by construction* —
-    ``HarnessSource`` refuses a path sitting beside one — so reading their
-    emptiness as "half-authored" mistakes the one legal shape of a local
-    source for the illegal shape of a remote one.
-    """
-    source = HarnessSource(name="mine", path=str(_git_checkout(tmp_path / "checkout")))
+def test_a_local_source_with_a_locator_path_is_complete(tmp_path, monkeypatch):
+    """A checkout on disk is an origin; GitHub coordinates stay derived empty."""
+    source = HarnessSource(
+        name="mine", locator=str(_git_checkout(tmp_path / "checkout"))
+    )
     _wire(monkeypatch, harness=(source,))
 
     assert server._harness_locator() == (source,)
@@ -774,7 +729,9 @@ async def test_a_local_source_reaches_the_activation_arm_and_serves(
     the stack came up rather than raising on the way.
     """
     config = _config(tmp_path)
-    source = HarnessSource(name="mine", path=str(_git_checkout(tmp_path / "checkout")))
+    source = HarnessSource(
+        name="mine", locator=str(_git_checkout(tmp_path / "checkout"))
+    )
     wiring = _wire(monkeypatch, harness=(source,))
 
     stack = create_stack(config=config)
@@ -783,48 +740,6 @@ async def test_a_local_source_reaches_the_activation_arm_and_serves(
         config.cache_dir / "harness.mine.pointer"
     ]
     assert "packages" in await _tool_names(stack)
-
-
-def test_a_partial_remote_entry_is_not_told_to_name_a_path(tmp_path, monkeypatch):
-    """The remote rule is unchanged, and so is the advice it gives.
-
-    An entry already carrying ``owner`` is a remote one, and the only way to
-    complete it is the coordinates it is still missing. Naming ``path`` in
-    that message would send the operator to a field ``HarnessSource`` refuses
-    beside a coordinate — a sentence whose instruction raises ``ValueError``
-    when it is followed.
-    """
-    _wire(monkeypatch, harness=(HarnessSource(name="mine", owner="molcrafts"),))
-
-    with pytest.raises(ConfigurationError) as excinfo:
-        server._harness_locator()
-
-    message = str(excinfo.value)
-    assert "mine" in message
-    assert "repo" in message
-    assert "ref" in message
-    assert "path" not in message
-
-
-def test_a_name_only_entry_names_the_local_origin_among_the_ways_to_finish_it(
-    tmp_path, monkeypatch
-):
-    """No origin at all is still an error — now with both origins offered.
-
-    ``molmcp config harness set --name mine`` writes exactly this entry and
-    exits 0, so the refusal an operator meets next is where they learn what
-    to type. With two origins there are two answers, and a message naming
-    only the coordinates hides the one that needs no published repository.
-    """
-    _wire(monkeypatch, harness=(HarnessSource(name="mine"),))
-
-    with pytest.raises(ConfigurationError) as excinfo:
-        server._harness_locator()
-
-    message = str(excinfo.value)
-    assert "mine" in message
-    for field_name in ("owner", "repo", "ref", "path"):
-        assert field_name in message
 
 
 @pytest.mark.parametrize("directory", ["gone", "plain"])
@@ -844,7 +759,7 @@ def test_a_local_path_that_is_not_a_checkout_is_refused_by_the_locator(
     root = tmp_path / directory
     if directory == "plain":
         root.mkdir()
-    source = HarnessSource(name="mine", path=str(root))
+    source = HarnessSource(name="mine", locator=str(root))
     _wire(monkeypatch, harness=(source,))
 
     with pytest.raises(ConfigurationError) as excinfo:
@@ -864,7 +779,7 @@ def test_an_unusable_local_path_refuses_before_anything_is_bound(tmp_path, monke
     transport" costs if it is not true — a half-bound cache directory for a
     settings file that was never servable.
     """
-    source = HarnessSource(name="mine", path=str(tmp_path / "gone"))
+    source = HarnessSource(name="mine", locator=str(tmp_path / "gone"))
     wiring = _wire(monkeypatch, harness=(source,))
 
     with pytest.raises(ConfigurationError):
@@ -882,7 +797,9 @@ def test_a_local_and_a_remote_source_are_complete_side_by_side(tmp_path, monkeyp
     list would either reject the local entry or stop checking the remote
     one's coordinates.
     """
-    local = HarnessSource(name="mine", path=str(_git_checkout(tmp_path / "checkout")))
+    local = HarnessSource(
+        name="mine", locator=str(_git_checkout(tmp_path / "checkout"))
+    )
     _wire(monkeypatch, harness=(_SOURCE, local))
 
     assert server._harness_locator() == (_SOURCE, local)
@@ -951,13 +868,8 @@ def test_the_real_locator_reads_the_named_sources_off_disk(tmp_path, monkeypatch
         monkeypatch,
         {
             "harness": [
-                {
-                    "name": "official",
-                    "owner": "molcrafts",
-                    "repo": "harness",
-                    "ref": "main",
-                },
-                {"name": "private", "owner": "acme", "repo": "tooling", "ref": "trunk"},
+                {"name": "official", "locator": "molcrafts/harness@main"},
+                {"name": "private", "locator": "acme/tooling@trunk"},
             ]
         },
     )
@@ -985,155 +897,24 @@ def test_the_real_locator_accepts_a_path_entry_off_disk(tmp_path, monkeypatch):
     _home_settings(
         tmp_path,
         monkeypatch,
-        {"harness": [{"name": "mine", "path": str(checkout)}]},
+        {"harness": [{"name": "mine", "locator": str(checkout)}]},
     )
 
     assert server._harness_locator() == (
-        HarnessSource(name="mine", path=str(checkout)),
+        HarnessSource(name="mine", locator=str(checkout)),
     )
 
 
-def test_a_name_only_entry_from_the_verb_makes_the_real_locator_raise(
-    tmp_path, monkeypatch
-):
-    """The serve-time price of a half-authored entry, paid end to end.
-
-    ``molmcp config harness set --name mine`` exits 0 — the settings layer
-    accepts a named entry with no coordinates on purpose, because
-    :data:`server._HARNESS_KEYS` is the *only* completeness rule and the CLI
-    deliberately does not carry a second copy of it. The cost is that every
-    subsequent ``molmcp serve`` refuses until the coordinates arrive, and
-    that cost belongs in a test rather than in an operator's afternoon: the
-    incomplete-entry raise has no other coverage in this suite.
-
-    Both halves are real. The write goes through ``cli.main`` to the actual
-    ``settings.set_harness_source`` and lands on disk, and the read is the
-    unfaked ``_harness_locator``. The ``_wire`` seam every composition test
-    above uses is deliberately absent here — a faked seam is what let a
-    broken reader of this exact key look green once already.
-
-    The expected field names are derived from ``server._HARNESS_KEYS``, never
-    written out as ``owner, repo, ref``. A literal triple would pass just as
-    well against ``settings._HARNESS_ENTRY_KEYS``, which also carries
-    ``name``, erasing the distinction ``server.py`` documents between what an
-    entry may write and what it must have filled in.
-    """
-    _home_settings(tmp_path, monkeypatch, {})
-
-    assert cli.main(["config", "harness", "set", "--name", "mine"]) == 0
-
-    with pytest.raises(ConfigurationError) as excinfo:
-        server._harness_locator()
-
-    message = str(excinfo.value)
-    assert "mine" in message
-    assert [key for key in server._HARNESS_KEYS if key not in message] == []
+def test_harness_coordinates_are_gone_from_server():
+    assert not hasattr(server, "_HARNESS_KEYS")
+    assert not hasattr(harness_module, "HARNESS_COORDINATES")
 
 
-# -- a `path` may not follow the working directory --------------------------
+# -- local locators: absolute, ``~/``, never relative -----------------------
 #
-# `molmcp config harness set --path ./checkout` stores that string verbatim in
-# `~/.molmcp/settings.json` — one file, read by every project on this machine —
-# and `molmcp serve` runs in whatever working directory an MCP client happened
-# to launch it in. One stored entry then names a different checkout per
-# session, which `CLAUDE.md` rules out explicitly.
-#
-# The rule the locator inherits from `assert_servable` is therefore
-# **working-directory dependence, not relativeness**: `~/harness` fails
-# `Path.is_absolute()` and is accepted, because home is the same directory in
-# every session. `tests/test_harness.py::TestAssertServable` owns the rule
-# itself, over direct calls; this section owns what the composition does with
-# it — that the refusal arrives from the locator with nothing bound behind it,
-# that the home-relative spelling travels the whole activation arm, and that
-# neither outcome touches the string in the settings file.
-
-#: Spellings whose meaning follows the working directory, paired with the
-#: location each names once the process stands in ``_working_directory``'s
-#: project tree. Duplicated from ``tests/test_harness.py`` rather than
-#: imported: one suite reaching into another's private names couples two
-#: mirrors of two different production units.
-_MOVING_PATHS = [
-    pytest.param("./checkout", ("checkout",), id="dot-slash"),
-    pytest.param("checkout", ("checkout",), id="bare-segment"),
-    pytest.param("../harness", ("..", "harness"), id="parent"),
-    pytest.param(
-        "harness/checkouts/mine",
-        ("harness", "checkouts", "mine"),
-        id="nested",
-    ),
-]
-
-
-@pytest.mark.parametrize(("spelling", "parts"), _MOVING_PATHS)
-def test_a_path_that_follows_the_working_directory_is_refused_by_the_locator(
-    tmp_path, monkeypatch, spelling: str, parts: tuple[str, ...]
-):
-    """The serve-time refusal, named entry and path, from the locator itself.
-
-    A real checkout is planted exactly where the spelling points from this
-    process's working directory, so the entry is *usable right now* and is
-    refused anyway: what is wrong with it is that the next session resolves
-    it somewhere else.
-    """
-    project = _working_directory(tmp_path, monkeypatch)
-    _git_checkout(project.joinpath(*parts))
-    _wire(monkeypatch, harness=(HarnessSource(name="mine", path=spelling),))
-
-    with pytest.raises(ConfigurationError) as excinfo:
-        server._harness_locator()
-
-    message = str(excinfo.value)
-    assert "mine" in message
-    assert spelling in message
-
-
-def test_the_refusal_explains_the_shared_file_rather_than_the_relative_path(
-    tmp_path, monkeypatch
-):
-    """Why, not what. The cause is invisible from the entry itself.
-
-    Two facts make the entry wrong, and neither is on the line the operator
-    is looking at: the settings file is shared by every project on the
-    machine, and the working directory belongs to whichever client launched
-    the server. "That path is relative" reports neither, and would send an
-    operator to rewrite ``~/harness`` — also not absolute, and accepted two
-    tests below.
-    """
-    project = _working_directory(tmp_path, monkeypatch)
-    _git_checkout(project / "checkout")
-    _wire(monkeypatch, harness=(HarnessSource(name="mine", path="./checkout"),))
-
-    with pytest.raises(ConfigurationError) as excinfo:
-        server._harness_locator()
-
-    message = str(excinfo.value).lower()
-    assert "shared" in message
-    assert "session" in message
-    assert "working directory" in message
-
-
-def test_a_path_that_follows_the_working_directory_refuses_before_anything_is_bound(
-    tmp_path, monkeypatch
-):
-    """Refused whole: no store, no pointer, no catalog for the bad entry.
-
-    The complement of the parametrized test above, and the same shape as
-    ``test_an_unusable_local_path_refuses_before_anything_is_bound``: the
-    raise has to come out of the locator, not out of something downstream
-    that already built a cache directory for a settings file which was never
-    servable.
-    """
-    project = _working_directory(tmp_path, monkeypatch)
-    _git_checkout(project / "checkout")
-    source = HarnessSource(name="mine", path="./checkout")
-    wiring = _wire(monkeypatch, harness=(source,))
-
-    with pytest.raises(ConfigurationError):
-        create_stack(config=_config(tmp_path))
-
-    assert wiring.stores == []
-    assert wiring.binds == []
-    assert wiring.catalogs == []
+# Relative paths cannot construct a ``HarnessSource``. ``~/harness`` and an
+# absolute checkout remain servable; the stored locator string is not
+# rewritten on the way through the reader.
 
 
 async def test_a_home_relative_source_reaches_the_activation_arm_and_serves(
@@ -1150,7 +931,9 @@ async def test_a_home_relative_source_reaches_the_activation_arm_and_serves(
     home = _fake_home(tmp_path, monkeypatch)
     _working_directory(tmp_path, monkeypatch)
     _git_checkout(home / "harness")
-    wiring = _wire(monkeypatch, harness=(HarnessSource(name="mine", path="~/harness"),))
+    wiring = _wire(
+        monkeypatch, harness=(HarnessSource(name="mine", locator="~/harness"),)
+    )
 
     stack = create_stack(config=config)
 
@@ -1173,12 +956,12 @@ def test_a_home_relative_path_resolves_under_home_not_the_working_directory(
     _fake_home(tmp_path, monkeypatch)
     project = _working_directory(tmp_path, monkeypatch)
     _git_checkout(project / "harness")
-    _wire(monkeypatch, harness=(HarnessSource(name="mine", path="~/harness"),))
+    _wire(monkeypatch, harness=(HarnessSource(name="mine", locator="~/harness"),))
 
     with pytest.raises(ConfigurationError) as excinfo:
         server._harness_locator()
 
-    assert "~/harness" in str(excinfo.value)
+    assert "mine" in str(excinfo.value)
 
 
 def test_the_real_locator_serves_a_home_relative_path_without_rewriting_it(
@@ -1194,7 +977,7 @@ def test_the_real_locator_serves_a_home_relative_path_without_rewriting_it(
     machines is a different bug in the same family.
     """
     settings_file = _home_settings(
-        tmp_path, monkeypatch, {"harness": [{"name": "mine", "path": "~/harness"}]}
+        tmp_path, monkeypatch, {"harness": [{"name": "mine", "locator": "~/harness"}]}
     )
     before = settings_file.read_bytes()
     # ``<home>/.molmcp/settings.json`` — read back off the helper's own answer
@@ -1202,7 +985,9 @@ def test_the_real_locator_serves_a_home_relative_path_without_rewriting_it(
     # was pointed at.
     _git_checkout(settings_file.parent.parent / "harness")
 
-    assert server._harness_locator() == (HarnessSource(name="mine", path="~/harness"),)
+    assert server._harness_locator() == (
+        HarnessSource(name="mine", locator="~/harness"),
+    )
 
     assert settings_file.read_bytes() == before
     assert "~/harness" in settings_file.read_text(encoding="utf-8")
@@ -1218,12 +1003,12 @@ def test_the_real_locator_serves_an_absolute_path_without_rewriting_it(
     """
     checkout = _git_checkout(tmp_path / "checkout")
     settings_file = _home_settings(
-        tmp_path, monkeypatch, {"harness": [{"name": "mine", "path": str(checkout)}]}
+        tmp_path, monkeypatch, {"harness": [{"name": "mine", "locator": str(checkout)}]}
     )
     before = settings_file.read_bytes()
 
     assert server._harness_locator() == (
-        HarnessSource(name="mine", path=str(checkout)),
+        HarnessSource(name="mine", locator=str(checkout)),
     )
 
     assert settings_file.read_bytes() == before

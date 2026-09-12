@@ -48,6 +48,7 @@ one, exactly as the two read-only callers in :mod:`molmcp.harness` and
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,7 +75,14 @@ from .harness_paths import (
     store_path,
 )
 from .runtime import resolved_cache_dir
-from .settings import HarnessSource, load_settings
+from .settings import (
+    HarnessSource,
+    SettingsError,
+    load_settings,
+    match_harness_source,
+    read_settings_file,
+    set_harness_source,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +163,7 @@ def sync_source(config: AppConfig, name: str) -> SyncReport:
             fetched. Raised by the transport and deliberately not reworded —
             its message is the only place the reason is written down.
     """
-    source = _named(load_settings(Path.cwd()).harness, name)
+    source = _named(_loaded_harness(), name)
     assert_servable(source)
 
     root = resolved_cache_dir(config)
@@ -227,7 +235,7 @@ def rollback_source(config: AppConfig, name: str) -> RollbackReport:
             afterwards, since one written here is one ``molmcp serve`` and
             ``molmcp init`` would then have to read.
     """
-    source = _named(load_settings(Path.cwd()).harness, name)
+    source = _named(_loaded_harness(), name)
     root = resolved_cache_dir(config)
     pointer = pointer_path(root, source.name)
     store = ImmutableGitStore(root=store_path(root), transport=GitHubTransport())
@@ -239,55 +247,158 @@ def rollback_source(config: AppConfig, name: str) -> RollbackReport:
     )
 
 
+def relocate_pointer(
+    config: AppConfig,
+    settings_path: Path,
+    *,
+    locator: str,
+    name: str,
+    enable: Sequence[str] = (),
+    disable: Sequence[str] = (),
+) -> None:
+    """Rename one harness source and move its activation pointer with it.
+
+    :func:`~molmcp.settings.set_harness_source` is the settings write;
+    :func:`~molmcp.harness_paths.pointer_path` still names the file from
+    the alias. This function is the one place an alias change also moves
+    that file. The target pointer must not already exist unless it *is*
+    the source file: refusing first is what leaves the settings file
+    unchanged. No pointer on disk is settings-only.
+
+    Args:
+        config: Already-resolved application configuration, so the
+            pointer paths land under the same cache root ``molmcp serve``
+            reads.
+        settings_path: The settings file that holds the entry.
+        locator: Origin as the operator wrote it; identity is its origin
+            key.
+        name: The new alias.
+        enable: Passed through to
+            :func:`~molmcp.settings.set_harness_source`.
+        disable: Passed through to
+            :func:`~molmcp.settings.set_harness_source`.
+
+    Raises:
+        ConfigurationError: The new pointer file already exists under a
+            different path, or the settings layer refuses the rename.
+    """
+    matched = match_harness_source(_file_harness(settings_path), locator)
+    old_pointer: Path | None = None
+    new_pointer: Path | None = None
+    same_pointer = True
+    if matched is not None:
+        root = resolved_cache_dir(config)
+        old_pointer = pointer_path(root, matched.name)
+        new_pointer = pointer_path(root, name)
+        same_pointer = old_pointer == new_pointer or (
+            old_pointer.exists()
+            and new_pointer.exists()
+            and os.path.samefile(old_pointer, new_pointer)
+        )
+        if new_pointer.exists() and not same_pointer:
+            raise ConfigurationError(
+                f"cannot rename harness source {matched.name!r} to {name!r}: "
+                f"the activation pointer {new_pointer} already exists"
+            )
+    _set_harness_source(
+        settings_path,
+        locator,
+        alias=name,
+        enable=enable,
+        disable=disable,
+    )
+    if (
+        old_pointer is not None
+        and new_pointer is not None
+        and old_pointer.exists()
+        and not same_pointer
+    ):
+        os.replace(old_pointer, new_pointer)
+
+
 def _named(sources: Sequence[HarnessSource], name: str) -> HarnessSource:
-    """Select the entry called *name*, or refuse and say what is configured.
+    """Select the entry matching *name* as an alias or a locator spelling.
 
     Naming the typo is only half the message. A source is addressed by an
-    operator-chosen label, so "unknown source" on its own leaves them to go
-    and read the settings file to find out what they should have typed.
+    operator-chosen label or by any spelling of its origin, so "unknown
+    source" on its own leaves them to go and read the settings file to
+    find out what they should have typed.
 
     Args:
         sources: The ``harness`` list as the settings files resolved it.
-        name: The label to match, compared exactly — ``pointer_path`` maps
-            two casings onto one file on darwin, but that is a collision to
-            report there rather than a licence to guess here.
+        name: An alias, or any accepted locator spelling of an origin.
 
     Returns:
-        The one entry with that name.
+        The one matching entry.
 
     Raises:
-        ConfigurationError: No entry carries that name.
+        ConfigurationError: No entry matches *name*.
     """
-    for source in sources:
-        if source.name == name:
-            return source
+    matched = match_harness_source(sources, name)
+    if matched is not None:
+        return matched
     configured = ", ".join(repr(source.name) for source in sources) or "(none)"
     raise ConfigurationError(
         f"no harness source is named {name!r}. This install configures: "
         f"{configured}. Sync one of those, or add the entry first with "
-        f"`molmcp config harness set --name {name} ...`."
+        f"`molmcp config harness set {name}`."
     )
+
+
+def _loaded_harness() -> tuple[HarnessSource, ...]:
+    """The resolved ``harness`` list, with settings failures as config errors."""
+    try:
+        return load_settings(Path.cwd()).harness
+    except SettingsError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
+
+def _file_harness(path: Path) -> tuple[HarnessSource, ...]:
+    """The ``harness`` entries stored in one settings file."""
+    try:
+        raw = read_settings_file(path)
+    except SettingsError as exc:
+        raise ConfigurationError(str(exc)) from exc
+    entries = raw.get("harness", [])
+    if not isinstance(entries, list):
+        return ()
+    return tuple(HarnessSource(**entry) for entry in entries if isinstance(entry, dict))
+
+
+def _set_harness_source(
+    path: Path,
+    locator: str,
+    *,
+    alias: str | None,
+    enable: Sequence[str],
+    disable: Sequence[str],
+) -> None:
+    """Call :func:`set_harness_source`, mapping a settings refusal up."""
+    try:
+        set_harness_source(path, locator, alias=alias, enable=enable, disable=disable)
+    except SettingsError as exc:
+        raise ConfigurationError(str(exc)) from exc
 
 
 def _transport(source: HarnessSource) -> GitTransport:
     """Build the transport this entry's *shape* calls for.
 
-    A ``path`` entry is a checkout on disk and gets
-    :class:`~molmcp.components.LocalGitTransport` rooted at that path;
-    anything else is a coordinate and gets
-    :class:`~molmcp.components.GitHubTransport`. No flag participates — see
-    the module docstring.
+    A local locator is a checkout on disk and gets
+    :class:`~molmcp.components.LocalGitTransport` rooted at
+    :func:`~molmcp.harness_paths.local_checkout_path`; a GitHub locator
+    gets :class:`~molmcp.components.GitHubTransport`. No flag participates
+    — see the module docstring.
 
     ``assert_servable`` has already run, and what that buys is narrower than
-    "the path is ready to use": the stored string does not follow the working
-    directory, and it names a real checkout **once expanded**. The expansion
-    is still this function's to do, and it is done by calling
-    :func:`~molmcp.harness_paths.local_checkout_path` rather than by a second
-    ``expanduser()`` here — a home-relative ``~/harness``, which that check
-    accepts precisely because home is the same directory in every session,
-    would otherwise root this transport at a *literal* ``~`` directory under
-    whatever working directory the client that launched this process stood
-    in. An empty ``path`` means the three coordinates are filled in.
+    "the path is ready to use": a local locator names a real checkout
+    **once expanded**. The expansion is still this function's to do, and it
+    is done by calling :func:`~molmcp.harness_paths.local_checkout_path`
+    rather than by a second ``expanduser()`` here — a home-relative
+    ``~/harness`` would otherwise root this transport at a *literal* ``~``
+    directory under whatever working directory the client that launched
+    this process stood in. A GitHub locator has an empty ``path``; its
+    ``owner`` / ``repo`` / ``ref`` are derived, and ``ref or None`` is what
+    :meth:`~molmcp.components.GitHubTransport.resolve_commit` is handed.
 
     Args:
         source: The entry to build a transport for.
@@ -297,7 +408,7 @@ def _transport(source: HarnessSource) -> GitTransport:
         a credential belongs in the environment of whatever reads it, and
         nothing in this module reads the environment.
     """
-    if source.path:
+    if source.is_local:
         return LocalGitTransport(local_checkout_path(source))
     return GitHubTransport()
 
@@ -481,4 +592,10 @@ def _nothing_to_roll_back(source: HarnessSource, pointer: Path) -> Configuration
     )
 
 
-__all__ = ["RollbackReport", "SyncReport", "rollback_source", "sync_source"]
+__all__ = [
+    "RollbackReport",
+    "SyncReport",
+    "relocate_pointer",
+    "rollback_source",
+    "sync_source",
+]

@@ -16,7 +16,7 @@ from .components import GitError
 from .config import AppConfig, ConfigurationError, load_config
 from .gate import run_gate
 from .harness_install import install_harness_components
-from .harness_sync import rollback_source, sync_source
+from .harness_sync import relocate_pointer, rollback_source, sync_source
 from .host import (
     HOSTS,
     activate_dev,
@@ -209,55 +209,43 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     harness_set = harness_actions.add_parser(
         "set",
-        help="Upsert one harness source, addressed by --name.",
+        help="Upsert one harness source, addressed by a locator.",
     )
     _scope_arguments(harness_set)
     harness_set.add_argument(
-        "--name",
-        required=True,
-        help="The entry's address; an unknown one is appended last.",
-    )
-    # Every coordinate defaults to None, never to a value: None means
-    # "leave as it was" to `settings.set_harness_source`, which is what
-    # lets a source be authored by more than one edit.
-    harness_set.add_argument(
-        "--owner",
-        default=None,
-        help="GitHub account or organization; omit to leave it as it was.",
-    )
-    harness_set.add_argument(
-        "--repo",
-        default=None,
-        help="GitHub repository name; omit to leave it as it was.",
-    )
-    harness_set.add_argument(
-        "--ref",
-        default=None,
-        help="Branch or tag; omit to leave it as it was.",
-    )
-    # The other way to spell an origin: a checkout already on disk instead of
-    # a GitHub coordinate. The mutual exclusion is not declared here —
-    # `HarnessSource.__post_init__` refuses the pair, and argparse's own
-    # `add_mutually_exclusive_group` would only restate it for the one entry
-    # being typed, missing the coordinate that is already in the file.
-    harness_set.add_argument(
-        "--path",
-        default=None,
-        dest="source_path",
+        "locator",
         help=(
-            "Filesystem path of a checkout to serve this source from, "
-            "instead of --owner/--repo/--ref; omit to leave it as it was."
+            "Origin as you write it: owner/repo, a GitHub URL, or a ~/ "
+            "or absolute checkout. The same origin upserts the same entry."
         ),
+    )
+    harness_set.add_argument(
+        "--alias",
+        default=None,
+        help="Name this source; omit to default to origin on insert.",
+    )
+    harness_set.add_argument(
+        "--enable",
+        action="append",
+        default=[],
+        metavar="TOKEN",
+        help="Bundle to enable. Repeatable. 'all' means every bundle.",
+    )
+    harness_set.add_argument(
+        "--disable",
+        action="append",
+        default=[],
+        metavar="TOKEN",
+        help="Bundle to disable. Repeatable. 'all' leaves the source with none.",
     )
     harness_remove = harness_actions.add_parser(
         "remove",
-        help="Drop the harness source called --name.",
+        help="Drop the harness source matching an alias or locator.",
     )
     _scope_arguments(harness_remove)
     harness_remove.add_argument(
-        "--name",
-        required=True,
-        help="The entry's address, matched exactly.",
+        "name",
+        help="The entry's alias, or any accepted locator spelling of its origin.",
     )
 
     # A second top-level verb rather than a `config harness` leaf: `config`
@@ -278,9 +266,10 @@ def _build_parser() -> argparse.ArgumentParser:
     harness_sync.add_argument(
         "name",
         help=(
-            "The harness source to sync, spelled as the `harness` settings "
-            "list names it. No default: with several sources configured, "
-            "guessing one would fetch code the operator did not ask for."
+            "The harness source to sync: its alias, or any accepted locator "
+            "spelling of its origin. No default: with several sources "
+            "configured, guessing one would fetch code the operator did "
+            "not ask for."
         ),
     )
     harness_rollback = harness_verbs.add_parser(
@@ -291,10 +280,10 @@ def _build_parser() -> argparse.ArgumentParser:
     harness_rollback.add_argument(
         "name",
         help=(
-            "The harness source to roll back, spelled as the `harness` "
-            "settings list names it. No default, for the reason `sync` has "
-            "none: with several sources configured, guessing one would change "
-            "what a plane serves without being asked."
+            "The harness source to roll back: its alias, or any accepted "
+            "locator spelling of its origin. No default, for the reason "
+            "`sync` has none: with several sources configured, guessing "
+            "one would change what a plane serves without being asked."
         ),
     )
 
@@ -667,7 +656,7 @@ def _config(args: argparse.Namespace) -> int:
 
 
 def _config_harness(args: argparse.Namespace, target: Path) -> None:
-    """Author one entry of the ``harness`` list, addressed by its name.
+    """Author one entry of the ``harness`` list, addressed by a locator.
 
     The string verbs cannot reach this key — ``set`` refuses the bare
     member of an object list and no dotted path into an entry exists — so
@@ -675,18 +664,17 @@ def _config_harness(args: argparse.Namespace, target: Path) -> None:
     branches here rather than inside :func:`_config` so that neither chain
     has to nest.
 
-    Nothing is checked about *completeness*: ``--name`` alone is a legal
-    write that leaves ``molmcp serve`` refusing until the coordinates
-    arrive. Which entries can be fetched from is ``server``'s question,
-    and a second answer to it here is how the two would drift apart.
+    A locator already in *target* whose ``--alias`` differs from the
+    stored name is renamed through
+    :func:`~molmcp.harness_sync.relocate_pointer`, so the activation
+    pointer follows. Every other write is
+    :func:`settings.set_harness_source`. This handler does not import
+    the locator parser or the pointer namer.
 
     Args:
-        args: The parsed namespace, carrying ``harness_action``, ``name``
-            and — on the ``set`` leaf — ``owner``/``repo``/``ref`` and
-            ``source_path`` (the ``--path`` flag, whose dest is qualified to
-            match :func:`settings.set_harness_source`'s keyword and to stay
-            clear of the ``--config`` file paths on the same namespace), each
-            ``None`` when it was not typed.
+        args: The parsed namespace, carrying ``harness_action`` and —
+            on the ``set`` leaf — ``locator``, ``alias``, ``enable`` and
+            ``disable``.
         target: The settings file the scope flags selected.
 
     Raises:
@@ -702,13 +690,27 @@ def _config_harness(args: argparse.Namespace, target: Path) -> None:
     # turning a green drift guard red. The bare access raises AttributeError, which
     # that test swallows by design.
     if args.harness_action == "set":
+        locator = args.locator
+        alias = args.alias
+        enable = tuple(args.enable)
+        disable = tuple(args.disable)
+        matched = settings.match_harness_source(_harness_file_sources(target), locator)
+        if matched is not None and alias is not None and alias != matched.name:
+            relocate_pointer(
+                load_config(None),
+                target,
+                locator=locator,
+                name=alias,
+                enable=enable,
+                disable=disable,
+            )
+            return
         settings.set_harness_source(
             target,
-            name=args.name,
-            owner=args.owner,
-            repo=args.repo,
-            ref=args.ref,
-            source_path=args.source_path,
+            locator,
+            alias=alias,
+            enable=enable,
+            disable=disable,
         )
         return
     if args.harness_action == "remove":
@@ -716,6 +718,17 @@ def _config_harness(args: argparse.Namespace, target: Path) -> None:
         return
     raise ConfigurationError(
         f"unrecognized `molmcp config harness` action: {args.harness_action!r}"
+    )
+
+
+def _harness_file_sources(path: Path) -> tuple[settings.HarnessSource, ...]:
+    """The ``harness`` entries stored in one settings file, or none."""
+    raw = settings.read_settings_file(path)
+    entries = raw.get("harness", [])
+    if not isinstance(entries, list):
+        return ()
+    return tuple(
+        settings.HarnessSource(**entry) for entry in entries if isinstance(entry, dict)
     )
 
 

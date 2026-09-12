@@ -69,19 +69,6 @@ from .settings import HarnessSource
 
 logger = logging.getLogger(__name__)
 
-#: The three coordinates that locate one named harness repository on GitHub.
-#: A *remote* entry carries all three or none of them; anything between is a
-#: configuration error rather than a value to guess at. They are not the whole
-#: completeness rule — :func:`assert_servable` reads them only after it has
-#: found no ``path``, because a local entry's coordinates are empty by
-#: construction rather than by omission.
-#:
-#: This is deliberately not ``molmcp.settings._HARNESS_ENTRY_KEYS``, which also
-#: holds ``name`` and ``path``: that set is what a settings-file entry may
-#: *write*, this one is what a *remote* entry must have filled in before it can
-#: be fetched from.
-HARNESS_COORDINATES = ("owner", "repo", "ref")
-
 #: What a local origin must have at the root it names. Probed with ``exists``
 #: rather than ``is_dir``: ``.git`` is a directory in an ordinary clone and a
 #: file in a linked worktree, and both are checkouts.
@@ -320,117 +307,46 @@ class ComponentFold:
 def assert_servable(source: HarnessSource) -> None:
     """Refuse one harness source that names no origin this install can reach.
 
-    An entry names **one** origin, and which one is read off its shape rather
-    than off a flag: ``path`` is a checkout already on disk, the three
-    :data:`HARNESS_COORDINATES` are a GitHub repository, and
-    :class:`~molmcp.settings.HarnessSource` refuses both at once. Reading
-    completeness as "all three coordinates are filled in" would therefore
-    report the one legal shape of a local source — three empty coordinates —
-    as half-authored, which is how a ``path``-only entry could never serve.
-
-    A local origin is checked against the filesystem here, beside the remote
-    entry's missing ``ref``, because it is the same kind of mistake: the
-    settings file is what is wrong, and the operator needs the entry name and
-    the path in one sentence rather than a ``GitError`` out of a transport
-    several steps later. The probe is ``.git`` under the named root, and it
-    is ``exists`` rather than ``is_dir`` on purpose — ``.git`` is a directory
-    in an ordinary clone and a *file* in a linked worktree.
-
-    Before that probe, a ``path`` is refused for **working-directory
-    dependence — deliberately not for relativeness**, and the difference is
-    the whole rule rather than a shade of wording. The entry is read out of
-    ``~/.molmcp/settings.json``, one file shared by every project on this
-    machine, while ``molmcp serve`` inherits whatever working directory the
-    client that launched it happened to stand in, so ``./checkout`` is one
-    stored string naming a different repository per session. ``~/harness``
-    fails ``Path.is_absolute()`` and carries none of that: home is the same
-    directory in every session, so it is expanded — through
-    :func:`local_checkout_path`, the one spelling of that expansion — and
-    served. Narrowed to ``is_absolute()`` this test
-    would refuse a spelling that already names one directory everywhere,
-    which is why the refusal offers ``~`` as a way out beside the absolute
-    path: a message naming only the second would send an operator to rewrite
-    an entry this function accepts as it stands.
-
-    The order is load-bearing, not incidental. A real checkout can sit
-    exactly where ``./checkout`` points from *this* process's working
-    directory, so a cwd check placed after the probe would accept the entry
-    on the strength of a repository the next session does not resolve to.
+    A GitHub locator is complete without a path, including with an empty
+    ``ref`` — :meth:`~molmcp.components.GitHubTransport.resolve_commit`
+    treats ``None`` as the repository default. A local locator must name a
+    checkout already on disk: ``.git`` exists under
+    :func:`~molmcp.harness_paths.local_checkout_path`. ``enable`` is not
+    read; catalog filtering is a later slice.
 
     Expanding is not rewriting. The source is read and never modified: the
-    stored string is the operator's, it may have been authored on another
-    machine, and normalising it to this machine's absolute path is a bug in
-    the same family as the one being refused. Every message here reports the
-    path **as written**, because that is the string the operator will look
-    for in the settings file.
+    stored locator is the operator's, and every message here reports it
+    **as written**.
 
     This is the single owner of the rule. ``molmcp serve`` reaches it through
     :func:`molmcp.server._harness_locator` and ``molmcp harness sync`` calls
     it on the one entry it was given, so an entry one command refuses cannot
-    be one the other accepts. What a caller may then assume of a ``path`` it
-    let through is exactly two things — that the string does not follow the
-    working directory, and that it names a checkout **once expanded**. It is
-    not a licence to open ``source.path`` as written: the caller expands it,
-    which means calling :func:`local_checkout_path`.
+    be one the other accepts. A local entry this lets through names a
+    checkout **once expanded**, which means calling
+    :func:`local_checkout_path` rather than opening ``source.path`` as
+    written.
 
     Args:
         source: One entry of the ``harness`` settings list, as written.
 
     Raises:
-        ConfigurationError: The entry names no origin at all, names a
-            partial GitHub coordinate, or names a ``path`` that follows the
-            working directory or is not a git checkout. Each message names
-            the entry, because under a list of sources the entry's name is
-            the address an operator goes to fix it, and names the path as the
-            settings file spells it. The partial-coordinate message
-            deliberately does **not** offer ``path``: an entry already
-            carrying an ``owner`` is a remote one, and telling its author to
-            add a ``path`` beside it is an instruction
-            ``HarnessSource.__post_init__`` raises on.
+        ConfigurationError: The entry is local and does not name a git
+            checkout. The message names the entry, because under a list of
+            sources the entry's name is the address an operator goes to
+            fix it, and names the locator as the settings file spells it.
     """
-    if source.path.strip():
-        root = local_checkout_path(source)
-        if not root.is_absolute():
-            raise ConfigurationError(
-                f"the harness source named {source.name!r} names a `path` "
-                f"that is read against the working directory: {source.path}. "
-                f"Your settings file is shared by every project on this "
-                f"machine, and `molmcp serve` inherits the working directory "
-                f"of whichever client launched it, so that one entry names a "
-                f"different checkout in every session. Write it as an "
-                f"absolute path, or as a `~/` path — home is the same "
-                f"directory in every session — on that entry of the `harness` "
-                f"list in your settings file, or remove the entry to serve "
-                f"without it."
-            )
-        if (root / _GIT_DIR_NAME).exists():
-            return
-        raise ConfigurationError(
-            f"the harness source named {source.name!r} names a `path` that is "
-            f"not a git checkout: {source.path}. A local origin is pinned to a "
-            f"commit exactly as a remote one is, so it must be the root of a "
-            f"repository already on disk — the directory holding its `.git`. "
-            f"Point that entry of the `harness` list at a checkout, or remove "
-            f"the entry to serve without it."
-        )
-    missing = [key for key in HARNESS_COORDINATES if not getattr(source, key).strip()]
-    if not missing:
+    if not source.is_local:
         return
-    if len(missing) == len(HARNESS_COORDINATES):
-        raise ConfigurationError(
-            f"the harness source named {source.name!r} names no origin: set "
-            f"owner, repo and ref to fetch it from a GitHub repository, or "
-            f"set path to a checkout already on disk. Fill one of those in on "
-            f"that entry of the `harness` list in your settings file, or "
-            f"remove the entry to serve without it."
-        )
-    named = ", ".join(missing)
+    root = local_checkout_path(source)
+    if (root / _GIT_DIR_NAME).exists():
+        return
     raise ConfigurationError(
-        f"the harness source named {source.name!r} is incomplete: "
-        f"{named} {'is' if len(missing) == 1 else 'are'} not set. Fill "
-        f"{'it' if len(missing) == 1 else 'them'} in on that entry of the "
-        f"`harness` list in your settings file, or remove the entry to "
-        f"serve without it."
+        f"the harness source named {source.name!r} names a `path` that is "
+        f"not a git checkout: {source.locator}. A local origin is pinned to a "
+        f"commit exactly as a remote one is, so it must be the root of a "
+        f"repository already on disk — the directory holding its `.git`. "
+        f"Point that entry of the `harness` list at a checkout, or remove "
+        f"the entry to serve without it."
     )
 
 

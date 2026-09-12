@@ -232,7 +232,7 @@ that belongs to a particular project.
 ```json
 {
   "harness": [
-    {"name": "official", "owner": "MolCrafts", "repo": "harness", "ref": "main"}
+    {"name": "official", "locator": "MolCrafts/harness"}
   ]
 }
 ```

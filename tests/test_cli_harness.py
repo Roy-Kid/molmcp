@@ -269,7 +269,7 @@ def synced_twice(cache, tmp_path) -> tuple[str, str]:
     the SHA it displaced has to fail here rather than be papered over.
     """
     root, first = _checkout(tmp_path / "checkout")
-    _install(cache, {"name": "official", "path": str(root)})
+    _install(cache, {"name": "official", "locator": str(root)})
     assert cli.main(["harness", "sync", "official"]) == 0
     second = _revise(root)
     assert cli.main(["harness", "sync", "official"]) == 0
@@ -294,7 +294,7 @@ class TestHarnessSync:
         names that commit rather than the directory.
         """
         root, head = _checkout(tmp_path / "checkout")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
 
         assert cli.main(["harness", "sync", "official"]) == 0
 
@@ -316,7 +316,7 @@ class TestHarnessSync:
         indistinguishable from a sync that never ran.
         """
         root, head = _checkout(tmp_path / "checkout")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
 
         assert cli.main(["harness", "sync", "official"]) == 0
 
@@ -342,7 +342,7 @@ class TestHarnessSync:
         was re-fetched and re-``os.replace``d underneath a running server.
         """
         root, head = _checkout(tmp_path / "checkout")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
         assert cli.main(["harness", "sync", "official"]) == 0
         published = (cache / "harness" / "commits" / head).stat().st_ino
         pointer = json.loads(
@@ -371,7 +371,7 @@ class TestHarnessSync:
         just a name.
         """
         root, first = _checkout(tmp_path / "checkout")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
         assert cli.main(["harness", "sync", "official"]) == 0
         _write(root / "skills" / "spec" / "SKILL.md", "# spec\n")
         second = _commit(root, "second")
@@ -397,13 +397,22 @@ class TestHarnessSync:
         """
         root, head = _checkout(tmp_path / "checkout")
         _write(root / "scratch.txt", _SCRATCH)
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
 
         assert cli.main(["harness", "sync", "official"]) == 0
 
         tree = _store(cache).tree_path(head)
         assert not (tree / "scratch.txt").exists()
         assert (tree / "harness.toml").is_file()
+
+    def test_sync_accepts_a_locator_spelling_of_the_same_origin(self, cache, tmp_path):
+        """Alias or locator: ``match_harness_source`` is how both verbs address."""
+        root, head = _checkout(tmp_path / "checkout")
+        _install(cache, {"name": "official", "locator": str(root)})
+
+        assert cli.main(["harness", "sync", str(root)]) == 0
+
+        assert _activation(cache, "official").current == head
 
 
 class TestHarnessSyncTransportChoice:
@@ -450,7 +459,7 @@ class TestHarnessSyncTransportChoice:
         monkeypatch.setattr(GitHubTransport, "resolve_commit", refuse)
         monkeypatch.setattr(GitHubTransport, "fetch_archive", refuse)
         root, head = _checkout(tmp_path / "checkout")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
 
         assert cli.main(["harness", "sync", "official"]) == 0
 
@@ -477,7 +486,7 @@ class TestHarnessSyncTransportChoice:
         home.
         """
         root, head = _checkout(_pin_home(home, monkeypatch) / "checkout")
-        _install(cache, {"name": "official", "path": "~/checkout"})
+        _install(cache, {"name": "official", "locator": "~/checkout"})
 
         assert cli.main(["harness", "sync", "official"]) == 0
 
@@ -491,9 +500,10 @@ class TestHarnessSyncTransportChoice:
         """The coordinate arm, with the socket replaced and nothing else.
 
         The fakes stand exactly where the network would: they are handed the
-        entry's own ``owner``/``repo``/``ref`` and answer with a commit and an
-        archive built from a repository in ``tmp_path``. Everything after them
-        — flatten, publish, stage, promote — is the real code.
+        locator's derived lowercase ``owner``/``repo`` and the ref, and
+        answer with a commit and an archive built from a repository in
+        ``tmp_path``. Everything after them — flatten, publish, stage,
+        promote — is the real code.
         """
         root, head = _checkout(tmp_path / "origin")
         resolved: list[tuple[str, str, str | None]] = []
@@ -515,9 +525,7 @@ class TestHarnessSyncTransportChoice:
             cache,
             {
                 "name": "official",
-                "owner": "molcrafts",
-                "repo": "harness",
-                "ref": "main",
+                "locator": "MolCrafts/harness@main",
             },
         )
 
@@ -525,6 +533,32 @@ class TestHarnessSyncTransportChoice:
 
         assert resolved == [("molcrafts", "harness", "main")]
         assert fetched == [("molcrafts", "harness", head)]
+        assert local_transports == []
+        assert _activation(cache, "official").current == head
+
+    def test_a_remote_source_can_be_synced_by_locator(
+        self, cache, tmp_path, monkeypatch, local_transports
+    ):
+        """``MolCrafts/harness`` addresses the same origin as the alias."""
+        root, head = _checkout(tmp_path / "origin")
+
+        def resolve(
+            self: GitHubTransport, owner: str, repo: str, ref: str | None
+        ) -> str:
+            return head
+
+        def fetch(self: GitHubTransport, owner: str, repo: str, sha: str) -> bytes:
+            return _archive(root, sha)
+
+        monkeypatch.setattr(GitHubTransport, "resolve_commit", resolve)
+        monkeypatch.setattr(GitHubTransport, "fetch_archive", fetch)
+        _install(
+            cache,
+            {"name": "official", "locator": "MolCrafts/harness@main"},
+        )
+
+        assert cli.main(["harness", "sync", "MolCrafts/harness"]) == 0
+
         assert local_transports == []
         assert _activation(cache, "official").current == head
 
@@ -548,8 +582,8 @@ class TestHarnessSyncErrors:
         root, _ = _checkout(tmp_path / "checkout")
         _install(
             cache,
-            {"name": "official", "path": str(root)},
-            {"name": "private", "owner": "acme", "repo": "tooling", "ref": "trunk"},
+            {"name": "official", "locator": str(root)},
+            {"name": "private", "locator": "acme/tooling@trunk"},
         )
 
         assert cli.main(["harness", "sync", "ghost"]) != 0
@@ -574,7 +608,7 @@ class TestHarnessSyncErrors:
         assertion.
         """
         root = _empty_repo(tmp_path / "checkout")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
 
         assert cli.main(["harness", "sync", "official"]) != 0
 
@@ -602,9 +636,7 @@ class TestHarnessSyncErrors:
             cache,
             {
                 "name": "official",
-                "owner": "molcrafts",
-                "repo": "harness",
-                "ref": "nope",
+                "locator": "molcrafts/harness@nope",
             },
         )
 
@@ -626,7 +658,7 @@ class TestHarnessSyncErrors:
         """
         root = tmp_path / "not-a-repo"
         root.mkdir()
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
 
         assert cli.main(["harness", "sync", "official"]) != 0
 
@@ -677,6 +709,19 @@ class TestHarnessRollback:
         assert activation.current == first
         assert activation.previous is None
         assert activation.staged is None
+
+    def test_rollback_accepts_a_locator_spelling_of_the_same_origin(
+        self, cache, tmp_path
+    ):
+        root, first = _checkout(tmp_path / "checkout")
+        _install(cache, {"name": "official", "locator": str(root)})
+        assert cli.main(["harness", "sync", "official"]) == 0
+        _revise(root)
+        assert cli.main(["harness", "sync", "official"]) == 0
+
+        assert cli.main(["harness", "rollback", str(root)]) == 0
+
+        assert _activation(cache, "official").current == first
 
     def test_the_restored_commit_is_still_a_readable_tree_in_the_store(
         self, cache, synced_twice
@@ -760,7 +805,7 @@ class TestHarnessRollbackErrors:
         activating nothing at all, which is worse than the state it refused.
         """
         root, head = _checkout(tmp_path / "checkout")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
         assert cli.main(["harness", "sync", "official"]) == 0
 
         assert cli.main(["harness", "rollback", "official"]) == 2
@@ -786,7 +831,7 @@ class TestHarnessRollbackErrors:
         ``molmcp init`` and ``molmcp serve`` then have to read.
         """
         root, _ = _checkout(tmp_path / "checkout")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
 
         assert cli.main(["harness", "rollback", "official"]) == 2
 
@@ -837,8 +882,8 @@ class TestHarnessRollbackErrors:
         root, _ = _checkout(tmp_path / "checkout")
         _install(
             cache,
-            {"name": "official", "path": str(root)},
-            {"name": "private", "owner": "acme", "repo": "tooling", "ref": "trunk"},
+            {"name": "official", "locator": str(root)},
+            {"name": "private", "locator": "acme/tooling@trunk"},
         )
 
         assert cli.main(["harness", "rollback", "ghost"]) != 0

@@ -53,6 +53,7 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "molmcp"
 _COMPONENT_MODULES = (
     SRC / "components" / "models.py",
     SRC / "components" / "catalog.py",
+    SRC / "components" / "locator.py",
 )
 
 #: Naming either of these in ``components/`` means the boundary moved.

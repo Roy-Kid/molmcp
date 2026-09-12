@@ -12,13 +12,17 @@ it.
 from __future__ import annotations
 
 import argparse
+import ast
+import inspect
 import json
+from pathlib import Path
 
 import pytest
 
 from molmcp import cli
 from molmcp import settings as st
-from molmcp.config import ConfigurationError
+from molmcp.config import AppConfig, ConfigurationError
+from molmcp.harness_paths import pointer_path
 
 
 def _user_settings() -> dict:
@@ -47,6 +51,54 @@ def _subparser_choices(
 def _config_action_parsers() -> dict[str, argparse.ArgumentParser]:
     """Every ``molmcp config <action>`` the real parser registers."""
     return _subparser_choices(_subparser_choices(cli._build_parser())["config"])
+
+
+def _run(argv: list[str]) -> int:
+    """``cli.main`` for a command that must parse, not argparse-exit."""
+    try:
+        return cli.main(argv)
+    except SystemExit as exc:
+        raise AssertionError(
+            f"cli.main({argv!r}) raised SystemExit({exc.code})"
+        ) from exc
+
+
+def _option_strings(parser: argparse.ArgumentParser) -> set[str]:
+    return {flag for action in parser._actions for flag in action.option_strings}
+
+
+def _positional_dests(parser: argparse.ArgumentParser) -> list[str]:
+    return [
+        action.dest
+        for action in parser._actions
+        if action.option_strings == [] and action.dest != "help"
+    ]
+
+
+def _cli_imported_targets() -> tuple[str, ...]:
+    """Absolute dotted import targets of ``cli.py``, relative imports resolved."""
+    path = Path(cli.__file__).resolve()
+    parts = ["molmcp"]
+    found: list[str] = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            found.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = parts[: len(parts) - (node.level - 1)]
+                tail = node.module.split(".") if node.module else []
+                module = ".".join([*base, *tail])
+            else:
+                module = node.module or ""
+            found.append(module)
+            found.extend(f"{module}.{alias.name}" for alias in node.names)
+    return tuple(found)
+
+
+def _reaches(targets: tuple[str, ...], dotted: str) -> bool:
+    return any(
+        target == dotted or target.startswith(f"{dotted}.") for target in targets
+    )
 
 
 class TestConfigScope:
@@ -101,27 +153,13 @@ class TestConfigVerbs:
         shape is user-visible output rather than an internal detail.
 
         ``to_dict`` is ``asdict`` over the dataclass, so an entry reports
-        every field rather than the ones the operator typed: a remote source
-        reports the empty ``path`` of the local origin it did not name, the
-        same way a half-authored one reports an empty ``ref``. The written
-        *file* is the narrower shape, which the two write tests below pin.
+        the three operator fields — including ``enable: None`` when the
+        file omitted the key. Derived identity (owner, repo, path) is not
+        a field and does not appear.
         """
         monkeypatch.chdir(tmp_path)
-        entry = {"name": "mine", "owner": "acme", "repo": "harness", "ref": "main"}
-        cli.main(
-            [
-                "config",
-                "harness",
-                "set",
-                "--name",
-                "mine",
-                "--owner",
-                "acme",
-                "--repo",
-                "harness",
-                "--ref",
-                "main",
-            ]
+        assert (
+            _run(["config", "harness", "set", "acme/harness", "--alias", "mine"]) == 0
         )
         capsys.readouterr()
 
@@ -131,8 +169,12 @@ class TestConfigVerbs:
         assert isinstance(harness, list)
         assert len(harness) == 1
         assert isinstance(harness[0], dict)
-        assert set(harness[0]) == {"name", "owner", "repo", "ref", "path"}
-        assert harness[0] == {**entry, "path": ""}
+        assert set(harness[0]) == {"name", "locator", "enable"}
+        assert harness[0] == {
+            "name": "mine",
+            "locator": "acme/harness",
+            "enable": None,
+        }
 
     def test_get_reads_one_key(self, home, monkeypatch, tmp_path, capsys):
         monkeypatch.chdir(tmp_path)
@@ -208,9 +250,15 @@ class TestConfigHarness:
     an entry exists. These leaves are the CLI's only route to one; the
     settings file itself is still the other, and stays the only one for a
     file these verbs can no longer read.
+
+    The operator types a locator: ``molmcp config harness set MolCrafts/harness``.
+    Optional ``--alias``, optional repeatable ``--enable`` / ``--disable``.
+    Coordinate flags (``--name --owner --repo --ref --path``) are gone.
+    Renaming an existing origin with ``--alias`` goes through
+    ``relocate_pointer`` so an activation pointer follows the new name.
     """
 
-    def test_set_writes_the_named_entry_to_the_user_file(
+    def test_set_writes_the_typed_locator_under_the_default_origin_alias(
         self, home, monkeypatch, tmp_path
     ):
         """The verb drives the real ``settings.set_harness_source``.
@@ -219,225 +267,309 @@ class TestConfigHarness:
         writer would keep passing while the file on disk carried a shape
         no reader accepts, which is the ``faked-seam-hides-broken-reader``
         failure this exact key has already had once.
+
+        The locator is stored as typed. Identity is derived at load, so
+        ``owner`` / ``repo`` / ``path`` never become keys in the file.
         """
         monkeypatch.chdir(tmp_path)
 
+        assert _run(["config", "harness", "set", "MolCrafts/harness"]) == 0
+
+        written = _user_settings()["harness"]
+        assert written == [{"name": "origin", "locator": "MolCrafts/harness"}]
+        assert "owner" not in written[0]
+        assert "repo" not in written[0]
+        assert "path" not in written[0]
+        assert "ref" not in written[0]
+        assert "enable" not in written[0]
+
+    def test_alias_names_the_entry(self, home, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+
         assert (
-            cli.main(
+            _run(
                 [
                     "config",
                     "harness",
                     "set",
-                    "--name",
+                    "MolCrafts/harness",
+                    "--alias",
                     "official",
-                    "--owner",
-                    "MolCrafts",
-                    "--repo",
-                    "harness",
-                    "--ref",
-                    "main",
                 ]
             )
             == 0
         )
 
-        assert _user_settings() == {
-            "harness": [
-                {
-                    "name": "official",
-                    "owner": "MolCrafts",
-                    "repo": "harness",
-                    "ref": "main",
-                }
-            ]
-        }
+        assert _user_settings()["harness"] == [
+            {"name": "official", "locator": "MolCrafts/harness"}
+        ]
 
-    def test_project_flag_writes_beside_the_project(self, home, monkeypatch, tmp_path):
+    def test_repeatable_enable_writes_the_named_list(self, home, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
 
         assert (
-            cli.main(
-                ["config", "harness", "set", "--project", "--name", "mine"],
+            _run(
+                [
+                    "config",
+                    "harness",
+                    "set",
+                    "MolCrafts/harness",
+                    "--enable",
+                    "sci",
+                    "--enable",
+                    "dev",
+                ]
             )
             == 0
         )
 
+        assert _user_settings()["harness"] == [
+            {
+                "name": "origin",
+                "locator": "MolCrafts/harness",
+                "enable": ["sci", "dev"],
+            }
+        ]
+
+    def test_repeatable_disable_all_writes_an_empty_enable_list(
+        self, home, monkeypatch, tmp_path
+    ):
+        monkeypatch.chdir(tmp_path)
+
+        assert (
+            _run(
+                [
+                    "config",
+                    "harness",
+                    "set",
+                    "MolCrafts/harness",
+                    "--disable",
+                    "all",
+                ]
+            )
+            == 0
+        )
+
+        assert _user_settings()["harness"] == [
+            {"name": "origin", "locator": "MolCrafts/harness", "enable": []}
+        ]
+
+    def test_the_set_parser_takes_a_positional_locator_and_drops_the_coordinates(
+        self,
+    ):
+        """Retired coordinate flags are gone; locator is positional."""
+        set_parser = _subparser_choices(_config_action_parsers()["harness"])["set"]
+        flags = _option_strings(set_parser)
+        for retired in ("--name", "--owner", "--repo", "--ref", "--path"):
+            assert retired not in flags
+        assert "--alias" in flags
+        assert "--enable" in flags
+        assert "--disable" in flags
+        assert "locator" in _positional_dests(set_parser)
+
+    def test_retired_coordinate_flags_are_absent_from_set_help(self, capsys):
+        """Argparse itself is what refuses the old flags, not the handler."""
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main(["config", "harness", "set", "--help"])
+
+        assert excinfo.value.code == 0
+        help_text = capsys.readouterr().out
+        for retired in ("--name", "--owner", "--repo", "--ref", "--path"):
+            assert retired not in help_text
+
+    def test_relocate_pointer_takes_config_and_keyword_only_edits(self):
+        import molmcp.harness_sync as harness_sync
+
+        assert hasattr(harness_sync, "relocate_pointer")
+        parameters = inspect.signature(harness_sync.relocate_pointer).parameters
+        assert list(parameters)[:2] == ["config", "settings_path"]
+        assert parameters["locator"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters["name"].kind is inspect.Parameter.KEYWORD_ONLY
+
+    def test_relocate_pointer_renames_the_pointer_file(
+        self, home, monkeypatch, tmp_path
+    ):
+        import molmcp.harness_sync as harness_sync
+
+        assert hasattr(harness_sync, "relocate_pointer")
+        monkeypatch.chdir(tmp_path)
+        config = AppConfig.from_dict(
+            {"schema_version": "2", "cache_dir": str(tmp_path / "cache")},
+            workspace_root=tmp_path,
+        )
+        assert config.cache_dir is not None
+        settings_path = st.user_settings_path()
+        st.set_harness_source(settings_path, "MolCrafts/harness")
+        old = pointer_path(config.cache_dir, "origin")
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_text("origin-pointer\n", encoding="utf-8")
+
+        harness_sync.relocate_pointer(
+            config,
+            settings_path,
+            locator="MolCrafts/harness",
+            name="official",
+        )
+
+        assert not old.exists()
+        assert (
+            pointer_path(config.cache_dir, "official").read_text(encoding="utf-8")
+            == "origin-pointer\n"
+        )
+        assert json.loads(settings_path.read_text())["harness"] == [
+            {"name": "official", "locator": "MolCrafts/harness"}
+        ]
+
+    def test_relocate_pointer_refuses_when_the_target_pointer_already_exists(
+        self, home, monkeypatch, tmp_path
+    ):
+        import molmcp.harness_sync as harness_sync
+
+        assert hasattr(harness_sync, "relocate_pointer")
+        monkeypatch.chdir(tmp_path)
+        config = AppConfig.from_dict(
+            {"schema_version": "2", "cache_dir": str(tmp_path / "cache")},
+            workspace_root=tmp_path,
+        )
+        assert config.cache_dir is not None
+        settings_path = st.user_settings_path()
+        st.set_harness_source(settings_path, "MolCrafts/harness")
+        old = pointer_path(config.cache_dir, "origin")
+        new = pointer_path(config.cache_dir, "official")
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_text("origin-pointer\n", encoding="utf-8")
+        new.write_text("already-official\n", encoding="utf-8")
+        before = settings_path.read_text(encoding="utf-8")
+
+        with pytest.raises((ConfigurationError, st.SettingsError)):
+            harness_sync.relocate_pointer(
+                config,
+                settings_path,
+                locator="MolCrafts/harness",
+                name="official",
+            )
+
+        assert settings_path.read_text(encoding="utf-8") == before
+        assert old.read_text(encoding="utf-8") == "origin-pointer\n"
+        assert new.read_text(encoding="utf-8") == "already-official\n"
+
+    def test_relocate_pointer_renames_the_entry_when_no_pointer_file_exists(
+        self, home, monkeypatch, tmp_path
+    ):
+        import molmcp.harness_sync as harness_sync
+
+        assert hasattr(harness_sync, "relocate_pointer")
+        monkeypatch.chdir(tmp_path)
+        config = AppConfig.from_dict(
+            {"schema_version": "2", "cache_dir": str(tmp_path / "cache")},
+            workspace_root=tmp_path,
+        )
+        assert config.cache_dir is not None
+        settings_path = st.user_settings_path()
+        st.set_harness_source(settings_path, "MolCrafts/harness")
+
+        harness_sync.relocate_pointer(
+            config,
+            settings_path,
+            locator="MolCrafts/harness",
+            name="official",
+        )
+
+        assert json.loads(settings_path.read_text())["harness"] == [
+            {"name": "official", "locator": "MolCrafts/harness"}
+        ]
+        assert not pointer_path(config.cache_dir, "origin").exists()
+        assert not pointer_path(config.cache_dir, "official").exists()
+
+    def test_rename_with_alias_relocates_an_existing_pointer_file(
+        self, home, monkeypatch, tmp_path
+    ):
+        """CLI set with a new ``--alias`` moves ``harness.origin.pointer``."""
+        monkeypatch.chdir(tmp_path)
+        cache = (tmp_path / "cache").resolve()
+        assert _run(["config", "set", "cacheDir", str(cache)]) == 0
+        assert _run(["config", "harness", "set", "MolCrafts/harness"]) == 0
+        old = pointer_path(cache, "origin")
+        old.parent.mkdir(parents=True, exist_ok=True)
+        old.write_text("origin-pointer\n", encoding="utf-8")
+
+        assert (
+            _run(
+                [
+                    "config",
+                    "harness",
+                    "set",
+                    "MolCrafts/harness",
+                    "--alias",
+                    "official",
+                ]
+            )
+            == 0
+        )
+
+        assert not old.exists()
+        assert pointer_path(cache, "official").read_text(encoding="utf-8") == (
+            "origin-pointer\n"
+        )
+        assert _user_settings()["harness"] == [
+            {"name": "official", "locator": "MolCrafts/harness"}
+        ]
+
+    def test_cli_does_not_import_locator_or_harness_paths(self):
+        """``cli.py`` reaches the namer through ``relocate_pointer``, not itself."""
+        imported = _cli_imported_targets()
+        assert not _reaches(imported, "molmcp.components.locator")
+        assert not _reaches(imported, "molmcp.harness_paths")
+
+    def test_project_flag_writes_beside_the_project(self, home, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+
+        assert _run(["config", "harness", "set", "--project", "acme/harness"]) == 0
+
         assert _user_settings() == {}
         written = st.project_settings_path(tmp_path)
-        assert json.loads(written.read_text())["harness"][0]["name"] == "mine"
+        assert json.loads(written.read_text())["harness"][0]["name"] == "origin"
+        assert json.loads(written.read_text())["harness"][0]["locator"] == (
+            "acme/harness"
+        )
 
     def test_local_flag_writes_the_untracked_override(
         self, home, monkeypatch, tmp_path
     ):
         monkeypatch.chdir(tmp_path)
 
-        assert (
-            cli.main(
-                ["config", "harness", "set", "--local", "--name", "mine"],
-            )
-            == 0
-        )
+        assert _run(["config", "harness", "set", "--local", "acme/harness"]) == 0
 
         assert _user_settings() == {}
         written = st.project_settings_path(tmp_path, local=True)
-        assert json.loads(written.read_text())["harness"][0]["name"] == "mine"
+        assert json.loads(written.read_text())["harness"][0]["name"] == "origin"
 
     def test_the_remove_leaf_takes_the_scope_flags_too(
         self, home, monkeypatch, tmp_path
     ):
         """Both leaves compose with ``_scope_arguments``, not just ``set``."""
         monkeypatch.chdir(tmp_path)
-        cli.main(["config", "harness", "set", "--project", "--name", "mine"])
+        _run(["config", "harness", "set", "--project", "acme/harness"])
 
-        assert (
-            cli.main(["config", "harness", "remove", "--project", "--name", "mine"])
-            == 0
-        )
+        assert _run(["config", "harness", "remove", "--project", "origin"]) == 0
 
         assert _user_settings() == {}
         written = st.project_settings_path(tmp_path)
         assert json.loads(written.read_text()) == {"harness": []}
 
-    def test_a_name_alone_writes_a_name_only_entry(self, home, monkeypatch, tmp_path):
-        """Partial authoring survives the CLI.
-
-        The coordinates arrive by separate edits, so none of them may be
-        defaulted to a value nobody typed. Whether the entry is complete
-        enough to fetch from is a serve-time question this verb does not
-        answer.
-        """
+    def test_remove_drops_the_entry_by_alias(self, home, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
+        _run(["config", "harness", "set", "MolCrafts/harness", "--alias", "official"])
 
-        assert cli.main(["config", "harness", "set", "--name", "mine"]) == 0
+        assert _run(["config", "harness", "remove", "official"]) == 0
 
-        assert _user_settings() == {
-            "harness": [{"name": "mine", "owner": "", "repo": "", "ref": ""}]
-        }
+        assert _user_settings() == {"harness": []}
 
-    def test_the_path_flag_writes_a_local_entry(self, home, monkeypatch, tmp_path):
-        """`--path` is the CLI's only route to the local origin.
-
-        A checkout on disk is the one way to name a harness that is not
-        published anywhere, so it is the first thing an operator writing
-        their own harness types — and until now the flag had no test at all,
-        which left the whole local install resting on a ``dest=`` spelling
-        (``--path`` maps to ``source_path``, because ``path`` is already the
-        settings file being edited) that nothing checked.
-
-        Nothing is monkeypatched: the assertion is the file on disk, for the
-        same reason the coordinate test above gives.
-        """
+    def test_remove_drops_the_entry_by_locator(self, home, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
-        checkout = tmp_path / "harness"
+        _run(["config", "harness", "set", "MolCrafts/harness", "--alias", "official"])
 
-        assert (
-            cli.main(
-                ["config", "harness", "set", "--name", "mine", "--path", str(checkout)]
-            )
-            == 0
-        )
-
-        assert _user_settings() == {
-            "harness": [
-                {
-                    "name": "mine",
-                    "owner": "",
-                    "repo": "",
-                    "ref": "",
-                    "path": str(checkout),
-                }
-            ]
-        }
-
-    def test_a_path_and_a_coordinate_in_one_invocation_is_refused(
-        self, home, monkeypatch, tmp_path, capsys
-    ):
-        """One entry names one origin, and argparse is not what says so.
-
-        The two flags are deliberately *not* an
-        ``add_mutually_exclusive_group``: that would only police the one
-        invocation being typed and would miss the coordinate already sitting
-        in the file. The rule lives on ``HarnessSource``, so the refusal has
-        to arrive as a ``molmcp:`` sentence rather than an argparse usage
-        line, and it has to leave nothing behind.
-        """
-        monkeypatch.chdir(tmp_path)
-
-        assert (
-            cli.main(
-                [
-                    "config",
-                    "harness",
-                    "set",
-                    "--name",
-                    "mine",
-                    "--owner",
-                    "acme",
-                    "--path",
-                    str(tmp_path / "harness"),
-                ]
-            )
-            == 2
-        )
-
-        assert capsys.readouterr().err.startswith("molmcp:")
-        assert _user_settings() == {}
-
-    def test_a_path_added_to_an_existing_coordinate_entry_leaves_the_file_alone(
-        self, home, monkeypatch, tmp_path, capsys
-    ):
-        """The second edit is where the one-origin rule earns its keep.
-
-        An entry is authored across several invocations, so the illegal pair
-        is usually assembled rather than typed: a remote source already on
-        disk, then ``--path`` on the same name. The merged entry is the one
-        that must be refused, and the already-configured remote source must
-        survive the refusal intact.
-        """
-        monkeypatch.chdir(tmp_path)
-        cli.main(
-            [
-                "config",
-                "harness",
-                "set",
-                "--name",
-                "official",
-                "--owner",
-                "MolCrafts",
-                "--repo",
-                "harness",
-                "--ref",
-                "main",
-            ]
-        )
-        before = _user_settings()
-        capsys.readouterr()
-
-        assert (
-            cli.main(
-                [
-                    "config",
-                    "harness",
-                    "set",
-                    "--name",
-                    "official",
-                    "--path",
-                    str(tmp_path / "harness"),
-                ]
-            )
-            == 2
-        )
-
-        assert capsys.readouterr().err.startswith("molmcp:")
-        assert _user_settings() == before
-
-    def test_remove_drops_the_entry_and_leaves_an_empty_list(
-        self, home, monkeypatch, tmp_path
-    ):
-        monkeypatch.chdir(tmp_path)
-        cli.main(["config", "harness", "set", "--name", "official"])
-
-        assert cli.main(["config", "harness", "remove", "--name", "official"]) == 0
+        assert _run(["config", "harness", "remove", "MolCrafts/harness"]) == 0
 
         assert _user_settings() == {"harness": []}
 
@@ -445,10 +577,10 @@ class TestConfigHarness:
         self, home, monkeypatch, tmp_path, capsys
     ):
         monkeypatch.chdir(tmp_path)
-        cli.main(["config", "harness", "set", "--name", "official"])
+        _run(["config", "harness", "set", "MolCrafts/harness"])
         capsys.readouterr()
 
-        assert cli.main(["config", "harness", "remove", "--name", "nope"]) == 2
+        assert cli.main(["config", "harness", "remove", "nope"]) == 2
 
         err = capsys.readouterr().err
         assert err.startswith("molmcp:")

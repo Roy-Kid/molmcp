@@ -348,7 +348,7 @@ def cache(home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 def synced(cache: Path, tmp_path: Path) -> str:
     """One synced local source named ``official``; returns its activated SHA."""
     root, head = _harness_checkout(tmp_path / "official")
-    _install(cache, {"name": "official", "path": str(root)})
+    _install(cache, {"name": "official", "locator": str(root)})
     _sync("official")
     return head
 
@@ -423,7 +423,7 @@ class TestInitInstallsWhatTheActivatedCatalogDeclares:
         root, _ = _harness_checkout(tmp_path / "official")
         _write(root / "skills" / "rogue" / "SKILL.md", "# rogue\n")
         _commit(root, "second")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
         _sync("official")
 
         assert _init() == 0
@@ -504,7 +504,7 @@ class TestASourceThatWasNeverSyncedIsSkipped:
         self, cache: Path, tmp_path: Path
     ) -> None:
         never, _ = _harness_checkout(tmp_path / "never")
-        _install(cache, {"name": "never", "path": str(never)})
+        _install(cache, {"name": "never", "locator": str(never)})
 
         assert _init() == 0
 
@@ -512,7 +512,7 @@ class TestASourceThatWasNeverSyncedIsSkipped:
         self, home: Path, cache: Path, tmp_path: Path
     ) -> None:
         never, _ = _harness_checkout(tmp_path / "never")
-        _install(cache, {"name": "never", "path": str(never)})
+        _install(cache, {"name": "never", "locator": str(never)})
 
         assert _init() == 0
 
@@ -526,8 +526,8 @@ class TestASourceThatWasNeverSyncedIsSkipped:
         official, _ = _harness_checkout(tmp_path / "official")
         _install(
             cache,
-            {"name": "never", "path": str(never)},
-            {"name": "official", "path": str(official)},
+            {"name": "never", "locator": str(never)},
+            {"name": "official", "locator": str(official)},
         )
         _sync("official")
 
@@ -556,8 +556,8 @@ class TestEachSourceResolvesUnderItsOwnRoot:
         private, _ = _rooted_checkout(tmp_path / "private")
         _install(
             cache,
-            {"name": "official", "path": str(official)},
-            {"name": "private", "path": str(private)},
+            {"name": "official", "locator": str(official)},
+            {"name": "private", "locator": str(private)},
         )
         _sync("official")
         _sync("private")
@@ -593,7 +593,7 @@ class TestTheManagedUsageSkillSurvives:
     @pytest.fixture
     def clobbering(self, cache: Path, tmp_path: Path) -> None:
         root, _ = _clobber_checkout(tmp_path / "official")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
         _sync("official")
 
     def test_the_constitution_is_the_packaged_file_after_init(
@@ -637,7 +637,7 @@ class TestOnlyTheActivatedCommitReachesTheHost:
         self, home: Path, cache: Path, tmp_path: Path
     ) -> None:
         root, _ = _harness_checkout(tmp_path / "official")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
         _sync("official")
         _write(root / "skills" / "daily" / "SKILL.md", _SCRATCH)
 
@@ -656,7 +656,7 @@ class TestOnlyTheActivatedCommitReachesTheHost:
         component of anything this install serves.
         """
         root, _ = _harness_checkout(tmp_path / "official")
-        _install(cache, {"name": "official", "path": str(root)})
+        _install(cache, {"name": "official", "locator": str(root)})
         _sync("official")
         _write(
             root / "harness.toml",

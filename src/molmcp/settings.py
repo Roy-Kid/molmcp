@@ -21,9 +21,13 @@ than one that says so.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
+
+from .components.locator import LocatorError, parse_harness_locator
+from .components.models import COMPONENT_NAME_PATTERN
 
 #: Directory name used for both the user home and a project checkout.
 CONFIG_DIR_NAME = ".molmcp"
@@ -89,12 +93,12 @@ _MERGED_LISTS = ("excludes", "knowledgeScope", "discoverInclude", "discoverExclu
 #: entries at the front and make the user file outrank the project file.
 _OBJECT_LISTS = ("harness",)
 
+#: Alias given to the first harness source authored without ``--alias``.
+DEFAULT_HARNESS_ALIAS = "origin"
 
-#: The GitHub-coordinate fields of one harness source: the origin ``path`` is
-#: the alternative to, and the only fields the opaque-token rule applies to.
-#: Named here rather than derived from the field list because "every field that
-#: is neither ``name`` nor ``path``" would silently enroll the sixth field.
-_HARNESS_COORDINATES = ("owner", "repo", "ref")
+#: Coordinate keys the locator model retired. A file that still carries one
+#: is a hard cut: re-author with ``molmcp config harness set <locator>``.
+_RETIRED_HARNESS_KEYS = frozenset({"owner", "path", "ref", "repo"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,102 +110,93 @@ class HarnessSource:
     may name several, and the order they are written in is the order they
     are read in.
 
-    Construction is strict about shape and permissive about absence. The
-    coordinates arrive by separate edits, so an empty one is a half-authored
-    entry rather than an error; ``name`` is the entry's address — the place
-    those remaining fields get filled in later — so it is the one field that
-    cannot be deferred. Whether an entry is complete enough to fetch with is
-    a serve-time question, not a load-time one.
+    The dataclass stores only what the operator wrote: an alias, a locator,
+    and an optional enable list. GitHub identity and the local path are
+    parsed from ``locator`` at construction and are properties, not fields —
+    they do not appear in :func:`dataclasses.asdict` or in the settings file.
+    Construction requires a locator; a name-only half-authored entry is not
+    a thing this type can represent.
 
     ``name`` is held to no grammar beyond "non-empty, no whitespace",
     deliberately: it is user-chosen in exactly the way a ``sources`` key is,
     and an operator who may name an index source ``MolCrafts`` may name a
-    harness source ``MolCrafts`` too. A non-empty coordinate must be an
-    opaque token — no ``/``, no ``@`` — which is what keeps a second
-    ``owner/repo@ref`` parser out of this module; the one that exists lives
-    in ``discovery/source/github.py``. Values are rejected, never rewritten.
+    harness source ``MolCrafts`` too. ``/`` is still refused later, when
+    the alias becomes a pointer path.
 
-    An entry names **one** origin. ``owner``/``repo``/``ref`` name a GitHub
-    coordinate; ``path`` names a checkout already on disk, which is how an
-    operator serves a harness they are still writing and the only way to
-    name one before it is published anywhere. Both at once is refused rather
-    than ranked: a source carrying a coordinate *and* a path has no answer
-    to "where does this come from", and picking a winner would make the
-    answer depend on which branch of the fetcher ran first.
-
-    ``path`` is exempt from the opaque-token rule — a filesystem path is
-    made of ``/``, and ``@`` is legal in a directory name — but from that
-    clause only. Whitespace and a backslash stay refused: a settings file is
-    not a shell, nothing here is ever handed to one, and a value that would
-    need quoting to survive is a value that was mistyped.
-
-    There are five fields and no more. A cache location is ``cacheDir`` at
-    the top level, and a credential belongs in the environment rather than a
-    settings file that can be committed.
+    ``enable`` is ``None`` (all bundles, the default), ``()`` (explicitly
+    none; the source remains), or a tuple of bundle names. Names match
+    :data:`~molmcp.components.models.COMPONENT_NAME_PATTERN` and are stored
+    first-seen unique. Catalog membership is not checked here.
 
     Attributes:
-        name: Non-empty, whitespace-free label chosen by the operator.
-        owner: GitHub account or organization; ``""`` while unwritten.
-        repo: GitHub repository name; ``""`` while unwritten.
-        ref: Branch or tag a commit is resolved from — not the commit being
-            served, which this entry's own activation pointer under the cache
-            directory names. ``""`` while unwritten.
-        path: Filesystem path of a checkout to serve from instead of a
-            coordinate; ``""`` on a remote or half-authored entry. Declared
-            last so the coordinates keep the positions they have always had.
-            Nothing here reads the filesystem: whether the path exists is a
-            fetch-time question, the way a coordinate's existence is.
+        name: Non-empty, whitespace-free alias chosen by the operator.
+        locator: Origin as the operator wrote it.
+        enable: ``None`` means all bundles; ``()`` means none; a non-empty
+            tuple is bundle names.
 
     Raises:
-        ValueError: If a field is not a string, carries whitespace, is an
-            empty ``name``, is a coordinate holding ``/`` or ``@``, is a
-            ``path`` holding a backslash, or is a ``path`` sitting beside a
-            coordinate.
+        ValueError: If ``name`` is empty or carries whitespace, if
+            ``locator`` is not an accepted locator, or if ``enable`` is not
+            ``None`` or a sequence of component names.
     """
 
     name: str
-    owner: str = ""
-    repo: str = ""
-    ref: str = ""
-    path: str = ""
+    locator: str
+    enable: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
-        for entry_field in fields(self):
-            value = getattr(self, entry_field.name)
-            if not isinstance(value, str):
-                raise ValueError(
-                    f"harness source {entry_field.name} must be a string, "
-                    f"got {type(value).__name__}"
-                )
-            if any(character.isspace() for character in value):
-                raise ValueError(
-                    f"harness source {entry_field.name} must not contain "
-                    f"whitespace: {value!r}"
-                )
-            if entry_field.name == "name":
-                if not value:
-                    raise ValueError("a harness source must have a non-empty name")
-            elif entry_field.name == "path":
-                if "\\" in value:
-                    raise ValueError(
-                        f"harness source path must not contain a backslash: {value!r}"
-                    )
-            elif "/" in value or "@" in value:
-                raise ValueError(
-                    f"harness source {entry_field.name} must be an opaque token "
-                    f"with no '/' or '@': {value!r}"
-                )
-        coordinates = [name for name in _HARNESS_COORDINATES if getattr(self, name)]
-        if self.path and coordinates:
+        if not isinstance(self.name, str):
             raise ValueError(
-                f"a harness source names one origin, but path {self.path!r} "
-                f"sits beside {', '.join(coordinates)}: it is either a "
-                f"checkout on disk or a GitHub coordinate, never both"
+                f"harness source name must be a string, got {type(self.name).__name__}"
             )
+        if not self.name:
+            raise ValueError("a harness source must have a non-empty name")
+        if any(character.isspace() for character in self.name):
+            raise ValueError(
+                f"harness source name must not contain whitespace: {self.name!r}"
+            )
+        if not isinstance(self.locator, str):
+            raise ValueError(
+                "harness source locator must be a string, "
+                f"got {type(self.locator).__name__}"
+            )
+        parse_harness_locator(self.locator)
+        object.__setattr__(self, "enable", _enable_names(self.enable))
+
+    @property
+    def origin_key(self) -> str:
+        """Canonical origin identity parsed from ``locator``."""
+        return parse_harness_locator(self.locator).origin_key
+
+    @property
+    def ref(self) -> str:
+        """Git ref from the locator, or ``""``."""
+        return parse_harness_locator(self.locator).ref
+
+    @property
+    def owner(self) -> str:
+        """Lowercase GitHub owner, or ``""`` for a local locator."""
+        return parse_harness_locator(self.locator).owner
+
+    @property
+    def repo(self) -> str:
+        """Lowercase GitHub repo without ``.git``, or ``""`` for a local locator."""
+        return parse_harness_locator(self.locator).repo
+
+    @property
+    def path(self) -> str:
+        """Resolved local path, or ``""`` for a GitHub locator."""
+        parsed = parse_harness_locator(self.locator)
+        return parsed.origin_key if parsed.kind == "local" else ""
+
+    @property
+    def is_local(self) -> bool:
+        """Whether ``locator`` named a filesystem path."""
+        return parse_harness_locator(self.locator).kind == "local"
 
 
 #: Keys one ``harness`` entry may carry, derived from the dataclass rather than
-#: written out: a hand-written literal would silently reject a fifth field the
+#: written out: a hand-written literal would silently reject a new field the
 #: day someone adds it to :class:`HarnessSource`.
 _HARNESS_ENTRY_KEYS: frozenset[str] = frozenset(f.name for f in fields(HarnessSource))
 
@@ -226,11 +221,8 @@ class Settings:
     discover_exclude: tuple[str, ...] = ()
     #: The autonomous harness repositories this install may serve from, in
     #: the order the most specific settings file wrote them; the empty tuple
-    #: is the un-harnessed install. Entries are stored as written, half-filled
-    #: included — a source's coordinates arrive by separate edits, and under a
-    #: list the completion address is the entry's ``name``, which is why
-    #: ``name`` is the only field a file cannot leave out. Whether an entry is
-    #: complete enough to fetch with is decided at serve time.
+    #: is the un-harnessed install. Each entry is a locator plus an alias;
+    #: identity is the locator's origin key, not the alias.
     harness: tuple[HarnessSource, ...] = field(default_factory=tuple)
     molexp: dict[str, str] = field(default_factory=dict)
     molq: dict[str, str] = field(default_factory=dict)
@@ -435,78 +427,113 @@ def remove_value(path: Path, key: str, value: str | None = None) -> dict[str, An
 
 def set_harness_source(
     path: Path,
+    locator: str,
     *,
-    name: str,
-    owner: str | None = None,
-    repo: str | None = None,
-    ref: str | None = None,
-    source_path: str | None = None,
+    alias: str | None = None,
+    enable: Sequence[str] = (),
+    disable: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Upsert one ``harness`` entry, addressed by its ``name``.
+    """Upsert one ``harness`` entry, addressed by the locator's origin key.
 
-    A field passed ``None`` is left as it was on an entry that already
-    exists and takes the :class:`HarnessSource` default on one that does not,
-    so no field is ever set to a value nobody typed. A ``name`` not
-    already configured is appended **last**: authoring a source never changes
-    which of the already-configured ones wins.
+    Empty ``enable`` / ``disable`` sequences mean "leave the field as it
+    was"; on insert that is ``None`` (all), which the file records by
+    omitting the key. ``("all",)`` is a sentinel on either flag, and must
+    not share the call with named tokens or with the other flag's ``all``.
+    Named ``enable`` unions an explicit list and replaces the all-sentinel;
+    named ``disable`` subtracts from an explicit list and is refused while
+    the field is still all.
 
-    ``source_path`` writes :attr:`HarnessSource.path`, and is spelled
-    differently on purpose: ``path`` is already this function's first
-    positional parameter — the settings file being edited — and two things
-    called ``path`` in one signature is the shape this chain has had to
-    unwind before. The positional keeps its name because every sibling verb
-    in this module opens with the same one; the new keyword takes the
-    qualified spelling.
+    A locator not already configured is appended **last**. ``alias is None``
+    names a new source :data:`DEFAULT_HARNESS_ALIAS` (``origin``) and keeps
+    the stored alias on an update; ``origin`` already taken by another
+    origin requires ``--alias``.
 
     Two orderings are the contract. The arguments are validated by
     constructing a :class:`HarnessSource` *before* :func:`_resolve`, the way
     :func:`set_value` refuses ahead of it, so a refused call leaves no file
     behind at all. The merged entry is then constructed a second time, after
     the read and still before the write, which is what leaves the dataclass —
-    never this function — deciding whether the result is legal. The
-    one-origin rule rides on that second construction: naming a coordinate on
-    an entry already carrying a path is refused by the type, with the file
-    left as it was.
+    never this function — deciding whether the result is legal.
 
     Args:
         path: The settings file to edit; created if it does not exist.
-        name: The entry's address, matched against the entries already there.
-        owner: GitHub account or organization, or ``None`` to leave it as is.
-        repo: GitHub repository name, or ``None`` to leave it as is.
-        ref: Branch or tag, or ``None`` to leave it as is.
-        source_path: Filesystem path of a checkout to serve this source
-            from — the entry's ``path`` field — or ``None`` to leave it as
-            is. Not the file being edited; that is the positional ``path``.
+        locator: Origin as the operator wrote it; identity is its origin key.
+        alias: The entry's name, or ``None`` to default on insert and keep
+            the stored name on update.
+        enable: Bundle names to turn on, ``("all",)`` for every bundle, or
+            empty to leave the field as it was.
+        disable: Bundle names to turn off, ``("all",)`` for none, or empty
+            to leave the field as it was.
 
     Returns:
         The whole file as written.
 
     Raises:
         SettingsError: If :class:`HarnessSource` refuses the arguments or the
-            merged entry — carrying the type's own message — or if the file
+            merged entry — carrying the type's own message — if ``all`` is
+            mixed with named tokens, if named ``disable`` is aimed at the
+            all-sentinel, if the default alias is taken, or if the file
             already on disk fails :func:`read_settings_file`. Nothing is
             written when it raises.
     """
-    offered: dict[str, str | None] = {
-        "name": name,
-        "owner": owner,
-        "repo": repo,
-        "ref": ref,
-        "path": source_path,
-    }
-    given = {
-        field_name: value
-        for field_name, value in offered.items()
-        if field_name in _HARNESS_ENTRY_KEYS and value is not None
-    }
-    _harness_entry(given)
+    enable_tokens = tuple(enable)
+    disable_tokens = tuple(disable)
+    enable_all = _is_all_flag(enable_tokens, flag="enable")
+    disable_all = _is_all_flag(disable_tokens, flag="disable")
+    if enable_all and disable_all:
+        raise SettingsError("cannot pass --enable all and --disable all together")
+    if (enable_all and disable_tokens) or (disable_all and enable_tokens):
+        raise SettingsError("cannot mix 'all' with named --enable / --disable")
+    named_enable = () if enable_all else enable_tokens
+    named_disable = () if disable_all else disable_tokens
+    if disable_all:
+        offered_enable: tuple[str, ...] | None = ()
+    elif named_enable or named_disable:
+        offered_enable = tuple(dict.fromkeys((*named_enable, *named_disable)))
+    else:
+        offered_enable = None
+    offered_name = alias if alias is not None else DEFAULT_HARNESS_ALIAS
+    _harness_entry({"name": offered_name, "locator": locator, "enable": offered_enable})
     root, leaf, container = _resolve(path, "harness", create=True)
-    entries: list[dict[str, str]] = list(container.get(leaf, []))
+    entries: list[dict[str, Any]] = list(container.get(leaf, []))
+    sources = _harness_sources(entries)
+    origin_key = parse_harness_locator(locator).origin_key
     at = next(
-        (index for index, entry in enumerate(entries) if entry.get("name") == name),
+        (
+            index
+            for index, source in enumerate(sources)
+            if source.origin_key == origin_key
+        ),
         None,
     )
-    merged = _harness_entry({**({} if at is None else entries[at]), **given})
+    if alias is None:
+        new_name = DEFAULT_HARNESS_ALIAS if at is None else sources[at].name
+    else:
+        new_name = alias
+    if at is None and alias is None:
+        if any(source.name == DEFAULT_HARNESS_ALIAS for source in sources):
+            raise SettingsError(
+                f"the default harness alias {DEFAULT_HARNESS_ALIAS!r} is "
+                "already used; pass --alias to name this source"
+            )
+    elif any(
+        index != at and source.name == new_name for index, source in enumerate(sources)
+    ):
+        raise SettingsError(f"harness source name {new_name!r} is already used")
+    current_enable = None if at is None else sources[at].enable
+    merged = _harness_entry(
+        {
+            "name": new_name,
+            "locator": locator,
+            "enable": _merge_enable(
+                current_enable,
+                named_enable=named_enable,
+                named_disable=named_disable,
+                disable_all=disable_all,
+                enable_all=enable_all,
+            ),
+        }
+    )
     if at is None:
         entries.append(merged)
     else:
@@ -516,33 +543,71 @@ def set_harness_source(
     return root
 
 
-def remove_harness_source(path: Path, name: str) -> dict[str, Any]:
-    """Drop the one ``harness`` entry called ``name``, keeping the rest in order.
+def match_harness_source(
+    sources: Sequence[HarnessSource], token: str
+) -> HarnessSource | None:
+    """Return the source whose alias or origin matches ``token``.
 
-    Removing the last entry leaves ``"harness": []`` rather than a missing
-    key: dropping the key is ``remove_value(path, "harness")``, a different
-    operation, and an empty list is how a file says it named no source.
+    Name is tried first, exact. A token that is also a locator spelling is
+    still a name if some source uses it as one. Only then is ``token``
+    parsed as a locator and compared by ``origin_key``, so a ref is not
+    identity.
+
+    Args:
+        sources: Configured harness sources, in file order.
+        token: An alias, or any accepted locator spelling of an origin.
+
+    Returns:
+        The first matching source, or ``None`` if none match.
+    """
+    for source in sources:
+        if source.name == token:
+            return source
+    try:
+        origin_key = parse_harness_locator(token).origin_key
+    except LocatorError:
+        return None
+    for source in sources:
+        if source.origin_key == origin_key:
+            return source
+    return None
+
+
+def remove_harness_source(path: Path, token: str) -> dict[str, Any]:
+    """Drop the one ``harness`` entry matching ``token``, keeping the rest.
+
+    ``token`` is an alias or a locator spelling; matching is
+    :func:`match_harness_source`. Removing the last entry leaves
+    ``"harness": []`` rather than a missing key: dropping the key is
+    ``remove_value(path, "harness")``, a different operation, and an empty
+    list is how a file says it named no source.
 
     Args:
         path: The settings file to edit; it must already carry the key.
-        name: The entry's address, matched exactly.
+        token: The entry's alias, or any accepted locator spelling of its
+            origin.
 
     Returns:
         The whole file as written.
 
     Raises:
-        SettingsError: If the file has no ``harness`` key, or carries no entry
-            with that ``name``, or fails :func:`read_settings_file`. Nothing
-            is written when it raises.
+        SettingsError: If the file has no ``harness`` key, or carries no
+            entry matching ``token``, or fails :func:`read_settings_file`.
+            Nothing is written when it raises.
     """
     root, leaf, container = _resolve(path, "harness", create=False)
     if leaf not in container:
         raise SettingsError(f"'harness' is not set in {path}")
-    entries: list[dict[str, str]] = container[leaf]
-    remaining = [entry for entry in entries if entry.get("name") != name]
-    if len(remaining) == len(entries):
-        raise SettingsError(f"{name!r} is not present in 'harness'")
-    container[leaf] = remaining
+    entries: list[dict[str, Any]] = container[leaf]
+    sources = _harness_sources(entries)
+    matched = match_harness_source(sources, token)
+    if matched is None:
+        raise SettingsError(f"{token!r} is not present in 'harness'")
+    container[leaf] = [
+        entry
+        for entry, source in zip(entries, sources, strict=True)
+        if source.name != matched.name
+    ]
     write_settings_file(path, root)
     return root
 
@@ -634,9 +699,10 @@ def _reject_bad_harness_entries(data: dict[str, Any], path: Path) -> None:
     Raises:
         SettingsError: If ``harness`` is not a list — a table from the retired
             three-key model included — if an element is not an object, carries
-            a key outside :data:`_HARNESS_ENTRY_KEYS`, omits ``name``, fails
-            :class:`HarnessSource` construction, or repeats a ``name`` another
-            entry in this same file already used.
+            a key outside :data:`_HARNESS_ENTRY_KEYS`, carries a retired
+            coordinate key, omits ``name`` or ``locator``, fails
+            :class:`HarnessSource` construction, or repeats a ``name`` or
+            origin key another entry in this same file already used.
     """
     if "harness" not in data:
         return
@@ -647,12 +713,20 @@ def _reject_bad_harness_entries(data: dict[str, Any], path: Path) -> None:
             f"({{{', '.join(sorted(_HARNESS_ENTRY_KEYS))}}}), "
             f"not {type(entries).__name__}"
         )
-    seen: set[str] = set()
+    seen_names: set[str] = set()
+    seen_origins: set[str] = set()
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise SettingsError(
                 f"harness[{index}] in {path} must be an entry object, "
                 f"not {type(entry).__name__}"
+            )
+        retired = sorted(set(entry) & _RETIRED_HARNESS_KEYS)
+        if retired:
+            raise SettingsError(
+                f"harness[{index}] in {path} uses retired coordinate keys "
+                f"({', '.join(retired)}); re-run molmcp config harness set "
+                f"<locator>"
             )
         strays = sorted(set(entry) - _HARNESS_ENTRY_KEYS)
         if strays:
@@ -662,20 +736,24 @@ def _reject_bad_harness_entries(data: dict[str, Any], path: Path) -> None:
                 f"Known harness entry keys: {', '.join(sorted(_HARNESS_ENTRY_KEYS))}"
             )
         if "name" not in entry:
-            raise SettingsError(
-                f"harness[{index}] in {path} has no 'name'; a harness source is "
-                f"named before its coordinates are filled in"
-            )
+            raise SettingsError(f"harness[{index}] in {path} has no 'name'")
+        if "locator" not in entry:
+            raise SettingsError(f"harness[{index}] in {path} has no 'locator'")
         try:
             source = HarnessSource(**entry)
         except ValueError as exc:
             raise SettingsError(f"harness[{index}] in {path}: {exc}") from exc
-        if source.name in seen:
+        if source.name in seen_names:
             raise SettingsError(
                 f"harness[{index}] in {path} repeats the name {source.name!r}; "
                 f"harness names are typed by hand and are not renamed for you"
             )
-        seen.add(source.name)
+        if source.origin_key in seen_origins:
+            raise SettingsError(
+                f"harness[{index}] in {path} repeats the origin {source.origin_key!r}"
+            )
+        seen_names.add(source.name)
+        seen_origins.add(source.origin_key)
 
 
 def _reject_object_list_write(key: str, *, leaf: str) -> None:
@@ -798,7 +876,7 @@ def _parse(key: str, value: str) -> Any:
     return value
 
 
-def _harness_entry(values: dict[str, str]) -> dict[str, str]:
+def _harness_entry(values: dict[str, Any]) -> dict[str, Any]:
     """Build one ``harness`` entry, letting the type own every field rule.
 
     The editing verbs call this both before they read and again on the merged
@@ -808,37 +886,36 @@ def _harness_entry(values: dict[str, str]) -> dict[str, str]:
     only the address differs, since a verb knows a name where a file knows a
     position.
 
-    An empty ``path`` is left out of the written entry, and it is the one
-    field that is: the empty coordinates are the half-authored model's own
-    invitation to fill them in later, while an empty ``path`` beside them
-    would advertise a slot that, once filled, makes the entry illegal. A
-    ``path`` that was actually given is written like any other field, and
-    :meth:`Settings.to_dict` still reports all five — that is a report of
-    resolved settings, not a file anyone edits by hand.
+    Only the operator fields are written. ``enable is None`` (all) omits the
+    key; ``()`` is written as ``[]``; a named tuple is written as a list.
+    Derived identity never lands in the file.
 
     Args:
         values: The fields to construct with; an omitted one takes the
             dataclass default rather than being invented here.
 
     Returns:
-        The entry as a plain dict: ``name`` and the three coordinates
-        always, ``path`` only when this source names one.
+        The entry as a plain dict of operator fields, ``enable`` omitted
+        when it is ``None``.
 
     Raises:
         SettingsError: If :class:`HarnessSource` refuses ``values``.
     """
+    operator = {key: values[key] for key in _HARNESS_ENTRY_KEYS if key in values}
     try:
-        entry = asdict(HarnessSource(**values))
+        entry = asdict(HarnessSource(**operator))
     except ValueError as exc:
         raise SettingsError(
-            f"harness source {values.get('name', '')!r}: {exc}"
+            f"harness source {operator.get('name', '')!r}: {exc}"
         ) from exc
-    if not entry["path"]:
-        del entry["path"]
+    if entry["enable"] is None:
+        del entry["enable"]
+    else:
+        entry["enable"] = list(entry["enable"])
     return entry
 
 
-def _harness_sources(entries: list[dict[str, str]]) -> tuple[HarnessSource, ...]:
+def _harness_sources(entries: list[Any]) -> tuple[HarnessSource, ...]:
     """Build the entry tuple from a ``harness`` value every layer accepted.
 
     Args:
@@ -852,6 +929,73 @@ def _harness_sources(entries: list[dict[str, str]]) -> tuple[HarnessSource, ...]
     return tuple(HarnessSource(**entry) for entry in entries)
 
 
+def _enable_names(value: Any) -> tuple[str, ...] | None:
+    """Normalize ``enable`` to ``None`` or a first-seen-unique name tuple."""
+    if value is None:
+        return None
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise ValueError(
+            "harness source enable must be a list of names or None, "
+            f"got {type(value).__name__}"
+        )
+    names: list[str] = []
+    seen: set[str] = set()
+    for token in value:
+        if not isinstance(token, str):
+            raise ValueError(
+                "harness source enable names must be strings, "
+                f"got {type(token).__name__}"
+            )
+        if COMPONENT_NAME_PATTERN.fullmatch(token) is None:
+            raise ValueError(
+                f"harness source enable name {token!r} is not a component name"
+            )
+        if token not in seen:
+            seen.add(token)
+            names.append(token)
+    return tuple(names)
+
+
+def _is_all_flag(tokens: tuple[str, ...], *, flag: str) -> bool:
+    """Return whether ``tokens`` is the ``all`` sentinel for one flag."""
+    if "all" not in tokens:
+        return False
+    if tokens != ("all",):
+        raise SettingsError(f"cannot mix 'all' with named --{flag} tokens: {tokens}")
+    return True
+
+
+def _merge_enable(
+    current: tuple[str, ...] | None,
+    *,
+    named_enable: tuple[str, ...],
+    named_disable: tuple[str, ...],
+    enable_all: bool,
+    disable_all: bool,
+) -> tuple[str, ...] | None:
+    """Apply one call's enable/disable flags onto the stored field."""
+    if enable_all:
+        result: tuple[str, ...] | None = None
+    elif named_enable:
+        if current is None:
+            result = tuple(dict.fromkeys(named_enable))
+        else:
+            result = tuple(dict.fromkeys((*current, *named_enable)))
+    else:
+        result = current
+    if disable_all:
+        return ()
+    if named_disable:
+        if result is None:
+            raise SettingsError(
+                "cannot --disable named bundles while enable is all; "
+                "pass --enable with the names to keep, or --disable all"
+            )
+        drop = set(named_disable)
+        return tuple(name for name in result if name not in drop)
+    return result
+
+
 def _str_tuple(value: Any) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(item) for item in value or ()))
 
@@ -862,6 +1006,7 @@ def _optional_int(value: Any) -> int | None:
 
 __all__ = [
     "CONFIG_DIR_NAME",
+    "DEFAULT_HARNESS_ALIAS",
     "LOCAL_SETTINGS_NAME",
     "SETTINGS_NAME",
     "HarnessSource",
@@ -870,6 +1015,7 @@ __all__ = [
     "add_value",
     "get_value",
     "load_settings",
+    "match_harness_source",
     "project_settings_path",
     "read_settings_file",
     "remove_harness_source",

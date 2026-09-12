@@ -17,7 +17,6 @@ from .collection import CollectionIndex
 from .components import ComponentKind
 from .config import AppConfig, load_config
 from .harness import (
-    HARNESS_COORDINATES,
     Checkout,
     activated_checkouts,
     checkout_planes,
@@ -57,18 +56,6 @@ _READ_ONLY = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
-
-#: The three coordinates that locate one named harness repository, under the
-#: name this module has always spelled them. It is the *same tuple object* as
-#: :data:`molmcp.harness.HARNESS_COORDINATES`, never a copy: ``molmcp harness
-#: sync`` refuses exactly the entries ``molmcp serve`` refuses, and two
-#: commands reading two spellings of one rule is how they would drift apart.
-#:
-#: They are no longer the whole completeness rule. An entry naming a ``path``
-#: is a local origin whose coordinates are empty *by construction* — see
-#: :func:`molmcp.harness.assert_servable`, which owns the rule these keys are
-#: only the remote half of.
-_HARNESS_KEYS = HARNESS_COORDINATES
 
 
 def _create_core_plane(
@@ -571,8 +558,9 @@ def _harness_locator() -> tuple[HarnessSource, ...]:
 
     Raises:
         ConfigurationError: An entry names no origin this install can reach.
-            See :func:`~molmcp.harness.assert_servable` for the three shapes
-            that qualify and what each message says.
+            See :func:`~molmcp.harness.assert_servable` for the GitHub
+            locator (complete without a ref) and the local checkout that
+            qualify, and what each message says.
     """
     return servable_sources(load_settings(Path.cwd()).harness)
 
