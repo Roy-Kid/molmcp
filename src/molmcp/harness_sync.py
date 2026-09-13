@@ -55,10 +55,12 @@ from pathlib import Path
 
 from .components import (
     Activation,
+    CatalogError,
     GitHubTransport,
     GitTransport,
     ImmutableGitStore,
     LocalGitTransport,
+    load_harness_catalog,
 )
 from .components.activate import (
     ActivationVersionError,
@@ -172,6 +174,13 @@ def sync_source(config: AppConfig, name: str) -> SyncReport:
     sha = transport.resolve_commit(source.owner, source.repo, source.ref or None)
     store = ImmutableGitStore(root=store_path(root), transport=transport)
     tree = _publish(store, source, sha)
+    try:
+        catalog = load_harness_catalog(tree, sha, SUPPORTED_CAPABILITIES)
+        catalog.enabled_components(source.enable)
+    except CatalogError as exc:
+        raise ConfigurationError(
+            f"the harness source named {source.name!r} cannot be served: {exc}"
+        ) from exc
 
     activation = _bind(pointer, store, source)
     if activation.current == sha:

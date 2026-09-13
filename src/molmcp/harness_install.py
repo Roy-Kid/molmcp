@@ -160,7 +160,10 @@ def _declared_files(
     tree = store.tree_path(sha)
     catalog = load_harness_catalog(tree, sha, SUPPORTED_CAPABILITIES)
     base = tree / catalog.component_root if catalog.component_root else tree
-    return tuple(_component_file(spec, base) for spec in catalog.components)
+    return tuple(
+        _component_file(spec, base)
+        for spec in catalog.enabled_components(source.enable)
+    )
 
 
 def _component_file(spec: ComponentSpec, base: Path) -> ComponentFile:

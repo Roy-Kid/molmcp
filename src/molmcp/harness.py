@@ -93,6 +93,10 @@ class Checkout:
     Attributes:
         sha: Activated commit SHA, as the pointer file records it.
         tree: Root of that commit's tree — where ``harness.toml`` sits.
+        enable: Copy of :attr:`HarnessSource.enable` for this source.
+            ``None`` means every bundle; ``()`` means contribute no
+            members. Required so a forgotten argument cannot silently
+            serve nothing.
         source: Name of the harness source this commit was activated for.
             It rides here, beside ``tree``, so that ``source -> tree`` has
             exactly one owner: :class:`ComponentFold` carries these objects
@@ -111,6 +115,7 @@ class Checkout:
     sha: str
     tree: Path
     source: str
+    enable: tuple[str, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,7 +494,12 @@ def activated_checkouts(
                 f"source's activation pointer at {pointer}."
             )
         checkouts.append(
-            Checkout(sha=current, tree=store.tree_path(current), source=source.name)
+            Checkout(
+                sha=current,
+                tree=store.tree_path(current),
+                source=source.name,
+                enable=source.enable,
+            )
         )
     return tuple(checkouts)
 
@@ -547,7 +557,7 @@ def fold_components(
             checkout.tree, checkout.sha, SUPPORTED_CAPABILITIES
         )
         component_roots.append((checkout.source, catalog.component_root))
-        for spec in catalog.components:
+        for spec in catalog.enabled_components(checkout.enable):
             if spec.kind is not kind:
                 continue
             sourced = SourcedComponent(source=checkout.source, spec=spec)

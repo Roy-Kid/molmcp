@@ -167,9 +167,9 @@ reading a catalog must not be able to run someone's code.
 The second kind of row is a bundle. A **bundle** is a named group of component
 ids, written as a row whose `kind` is the literal string `"bundle"` — which is
 why `ComponentKind("bundle")` raises. It is not a sixth component kind, and a
-bundle may not contain another bundle. Every catalog must define both `daily`
-and `dev`; a catalog missing either is refused, because a host that asks for
-`daily` and silently gets nothing looks configured and is not.
+bundle may not contain another bundle. Bundle names are the author's; a
+catalog may define none, in which case every component is one implicit
+package. `sci` and `dev` are ordinary names, not reserved slots.
 
 The keys, in full — there are no others, and an unknown one is an error rather
 than an ignored line:

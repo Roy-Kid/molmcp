@@ -75,8 +75,9 @@ entrypoint = "molpy_overlay:MolpyOverlay"
 # ---------------------------------------------------------------------------
 # Bundles — named groups of the component ids above. A bundle is written as
 # a `component` row whose kind is the literal "bundle"; it is not one of the
-# five component kinds and may not be a member of another bundle. Every
-# catalog must define both `daily` and `dev`.
+# five component kinds and may not be a member of another bundle. Bundle
+# names are author-chosen; `daily` and `dev` here are examples, not a
+# language-gate pair.
 # ---------------------------------------------------------------------------
 
 [[component]]

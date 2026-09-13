@@ -110,7 +110,7 @@ entrypoint = "plane:build"
 [[component]]
 kind = "bundle"
 name = "daily"
-members = ["skill.daily", "skill.review"]
+members = ["skill.daily", "skill.review", "provider.demo"]
 
 [[component]]
 kind = "bundle"

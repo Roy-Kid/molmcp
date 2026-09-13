@@ -72,7 +72,6 @@ _CAPABILITIES = frozenset({"provider-sdk", "harness-catalog"})
 _TOP_LEVEL_KEYS = frozenset({"requires", "component", "component_root"})
 _COMPONENT_KEYS = frozenset({"kind", "name", "path", "entrypoint"})
 _BUNDLE_KEYS = frozenset({"kind", "name", "members", "requires"})
-_REQUIRED_BUNDLES = frozenset({"daily", "dev"})
 _ENTRYPOINT_KINDS = frozenset({"provider", "overlay"})
 
 #: Vocabulary that belongs to the concept page and nowhere else.
@@ -243,7 +242,7 @@ class TestHarnessCatalogFixture:
         assert catalog.sha == _SHA
         assert set(catalog.requires) <= _CAPABILITIES
         assert catalog.components
-        assert {b.name for b in catalog.bundles} >= _REQUIRED_BUNDLES
+        assert catalog.bundles
 
     def test_example_carries_every_key_the_page_names(self, example_table):
         assert set(example_table) == _TOP_LEVEL_KEYS

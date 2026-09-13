@@ -189,7 +189,7 @@ def _checkout(
     (tree / "harness.toml").write_text(
         _catalog_toml(specs, component_root=component_root), encoding="utf-8"
     )
-    return harness.Checkout(sha=sha, tree=tree, source=source)
+    return harness.Checkout(sha=sha, tree=tree, source=source, enable=None)
 
 
 def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:

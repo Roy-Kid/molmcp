@@ -24,7 +24,6 @@ from .models import (
 _TOP_LEVEL_KEYS = frozenset({"requires", "component", "component_root"})
 _COMPONENT_KEYS = frozenset({"kind", "name", "path", "entrypoint"})
 _BUNDLE_KEYS = frozenset({"kind", "name", "members", "requires"})
-_REQUIRED_BUNDLES = frozenset({"daily", "dev"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,17 +52,18 @@ class HarnessCatalog:
 
     Identity is only ``sha`` (40-character lowercase git commit
     fingerprint). Direct construction runs the language gate (valid SHA,
-    known ``requires`` tokens, unique ids, every catalog must include
-    both a ``daily`` and a ``dev`` bundle). Eligibility against a
-    runtime capability set is *not* a field and is *not* checked here;
-    only :func:`load_harness_catalog` does that.
+    known ``requires`` tokens, unique ids). Bundles are optional: zero
+    bundles means the catalog is one implicit package of every
+    component. Eligibility against a runtime capability set is *not* a
+    field and is *not* checked here; only :func:`load_harness_catalog`
+    does that.
 
     Attributes:
         sha: Caller-supplied 40-character lowercase hex git SHA.
         requires: Catalog-level capability tokens (language-gate set).
         components: Leaf :class:`ComponentSpec` rows (no bundles).
-        bundles: :class:`BundleSpec` rows (must include ``daily`` and
-            ``dev``).
+        bundles: :class:`BundleSpec` rows (author-chosen names; may be
+            empty).
         component_root: Tree-relative POSIX directory every component
             ``path`` in this catalog resolves under, or ``""`` for the
             tree itself. Declared last because the four fields above
@@ -71,10 +71,10 @@ class HarnessCatalog:
             are never rewritten to include it.
 
     Raises:
-        CatalogError: Invalid SHA, unknown requires token, missing
-            ``daily``/``dev``, duplicate id or bundle name, a bundle
-            member id that is not in ``components``, or a
-            ``component_root`` that could escape the tree.
+        CatalogError: Invalid SHA, unknown requires token, duplicate
+            id or bundle name, a bundle member id that is not in
+            ``components``, or a ``component_root`` that could escape
+            the tree.
     """
 
     sha: str
@@ -92,8 +92,6 @@ class HarnessCatalog:
                 raise CatalogError(f"unknown requires token: {token!r}")
         names = tuple(bundle.name for bundle in self.bundles)
         name_set = set(names)
-        if not _REQUIRED_BUNDLES.issubset(name_set):
-            raise CatalogError("catalog must include daily and dev bundles")
         ids = tuple(spec.id for spec in self.components)
         if len(ids) != len(set(ids)):
             raise CatalogError("duplicate component id")
@@ -171,6 +169,50 @@ class HarnessCatalog:
         members = tuple(by_id[member_id] for member_id in bundle.members)
         requires = tuple(dict.fromkeys((*self.requires, *bundle.requires)))
         return ResolvedBundle(name=bundle.name, members=members, requires=requires)
+
+    def enabled_components(
+        self, names: tuple[str, ...] | None
+    ) -> tuple[ComponentSpec, ...]:
+        """Return the first-seen union of components selected by *names*.
+
+        ``()`` is an explicit empty view. ``None`` means every bundle,
+        or every component when the catalog has no bundles. Unknown
+        names raise :class:`CatalogError` containing ``unknown-bundle``.
+        Components listed in more than one selected bundle appear once,
+        in enable-list then member order.
+
+        Args:
+            names: Bundle names to include, ``None`` for all, or ``()``
+                for none.
+
+        Returns:
+            Selected :class:`ComponentSpec` rows.
+
+        Raises:
+            CatalogError: A name is not a bundle in this catalog. The
+                message contains ``unknown-bundle``.
+        """
+        if names == ():
+            return ()
+        if not self.bundles:
+            if names is None:
+                return self.components
+            raise CatalogError("unknown-bundle: known: []")
+        selected = (
+            names
+            if names is not None
+            else tuple(bundle.name for bundle in self.bundles)
+        )
+        known = {bundle.name for bundle in self.bundles}
+        unknown = tuple(name for name in selected if name not in known)
+        if unknown:
+            listed = ", ".join(repr(name) for name in sorted(known))
+            raise CatalogError(f"unknown-bundle: {unknown[0]!r}; known: [{listed}]")
+        kept: dict[str, ComponentSpec] = {}
+        for name in selected:
+            for spec in self.resolve_bundle(name).members:
+                kept.setdefault(spec.id, spec)
+        return tuple(kept.values())
 
 
 def load_harness_catalog(

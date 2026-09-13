@@ -1,6 +1,6 @@
 ---
 title: 按 enable 过滤 harness catalog 的 bundle 成员
-status: approved
+status: done
 created: 2026-09-11
 grilled: true
 ---
@@ -79,14 +79,14 @@ Not applicable (`science.required` is false).
 
 ## Tasks
 
-- [ ] Write failing unit tests for HarnessCatalog.enabled_components (tests/test_components/test_catalog.py → TestHarnessCatalog)
-- [ ] Implement enabled_components and drop _REQUIRED_BUNDLES in src/molmcp/components/catalog.py; tweak CatalogError docstring in src/molmcp/components/models.py
-- [ ] Write failing unit tests for Checkout.enable and fold_components filtering (tests/test_harness.py → TestFoldComponents, TestActivatedCheckouts)
-- [ ] Implement Checkout.enable, unsynced-only skip, and enabled_components iteration in src/molmcp/harness.py
-- [ ] Write failing unit tests for empty-enable placement vs unsynced skip (tests/test_harness_install.py) and unknown names at sync (tests/test_cli_harness.py → TestHarnessSyncErrors)
-- [ ] Implement enabled_components calls in src/molmcp/harness_install.py and src/molmcp/harness_sync.py; stop requiring daily+dev in docs/concepts/harness.md, harness.example.toml, and tests/test_harness_catalog_fixture.py
-- [ ] Add regression example regressions/harness-locator-host-adapters-02-enable.py (public API only; hard-coded goldens, no third-party runtime)
-- [ ] Run full check + test suite
+- [x] Write failing unit tests for HarnessCatalog.enabled_components (tests/test_components/test_catalog.py → TestHarnessCatalog)
+- [x] Implement enabled_components and drop _REQUIRED_BUNDLES in src/molmcp/components/catalog.py; tweak CatalogError docstring in src/molmcp/components/models.py
+- [x] Write failing unit tests for Checkout.enable and fold_components filtering (tests/test_harness.py → TestFoldComponents, TestActivatedCheckouts)
+- [x] Implement Checkout.enable, unsynced-only skip, and enabled_components iteration in src/molmcp/harness.py
+- [x] Write failing unit tests for empty-enable placement vs unsynced skip (tests/test_harness_install.py) and unknown names at sync (tests/test_cli_harness.py → TestHarnessSyncErrors)
+- [x] Implement enabled_components calls in src/molmcp/harness_install.py and src/molmcp/harness_sync.py; stop requiring daily+dev in docs/concepts/harness.md, harness.example.toml, and tests/test_harness_catalog_fixture.py
+- [x] Add regression example regressions/harness-locator-host-adapters-02-enable.py (public API only; hard-coded goldens, no third-party runtime)
+- [x] Run full check + test suite
 
 ## Testing strategy
 

@@ -129,13 +129,15 @@ def _catalog(
     ``component_root`` defaults to the absent key, so every call site written
     before it describes a rootless catalog and reads exactly as it did.
     """
+    leaves = (_SKILL, *components)
+    ids = tuple(spec.id for spec in leaves)
     return HarnessCatalog(
         sha=sha,
         requires=(),
-        components=(_SKILL, *components),
+        components=leaves,
         bundles=(
-            BundleSpec(name="daily", members=("skill.daily",)),
-            BundleSpec(name="dev", members=("skill.daily",)),
+            BundleSpec(name="daily", members=ids),
+            BundleSpec(name="dev", members=ids),
         ),
         component_root=component_root,
     )

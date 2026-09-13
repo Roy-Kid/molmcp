@@ -1,4 +1,4 @@
-"""HarnessCatalog construction, lookup, and harness.toml loading."""
+"""HarnessCatalog construction, lookup, enable filtering, and harness.toml loading."""
 
 from __future__ import annotations
 
@@ -242,6 +242,47 @@ def _dev_bundle(
     return BundleSpec(name="dev", members=members, requires=requires)
 
 
+def _enable_leaves() -> tuple[ComponentSpec, ...]:
+    return (
+        ComponentSpec(
+            kind=ComponentKind.SKILL,
+            name="notes",
+            id="skill.notes",
+            path="skills/notes/SKILL.md",
+        ),
+        ComponentSpec(
+            kind=ComponentKind.RULE,
+            name="style",
+            id="rule.style",
+            path="rules/style.md",
+        ),
+        ComponentSpec(
+            kind=ComponentKind.AGENT,
+            name="reviewer",
+            id="agent.reviewer",
+            path="agents/reviewer/AGENT.md",
+        ),
+    )
+
+
+def _sci_bundle() -> BundleSpec:
+    return BundleSpec(name="sci", members=("skill.notes", "rule.style"))
+
+
+def _lab_bundle() -> BundleSpec:
+    return BundleSpec(name="lab", members=("skill.notes", "agent.reviewer"))
+
+
+def _enable_catalog(
+    *,
+    bundles: tuple[BundleSpec, ...] | None = None,
+) -> HarnessCatalog:
+    return _catalog(
+        components=_enable_leaves(),
+        bundles=(_sci_bundle(), _lab_bundle()) if bundles is None else bundles,
+    )
+
+
 def _catalog(
     *,
     sha: str = SHA,
@@ -329,13 +370,18 @@ class TestHarnessCatalog:
         with pytest.raises(CatalogError):
             _catalog(requires=("not-a-capability",))
 
-    def test_rejects_missing_daily_bundle(self):
-        with pytest.raises(CatalogError):
-            _catalog(bundles=(_dev_bundle(),))
+    def test_constructs_with_only_sci_bundle(self):
+        catalog = _enable_catalog(bundles=(_sci_bundle(),))
+        assert tuple(bundle.name for bundle in catalog.bundles) == ("sci",)
 
-    def test_rejects_missing_dev_bundle(self):
-        with pytest.raises(CatalogError):
-            _catalog(bundles=(_daily_bundle(),))
+    def test_constructs_with_empty_bundles(self):
+        catalog = _enable_catalog(bundles=())
+        assert catalog.bundles == ()
+        assert tuple(spec.id for spec in catalog.components) == (
+            "skill.notes",
+            "rule.style",
+            "agent.reviewer",
+        )
 
     def test_rejects_duplicate_component_ids(self):
         leaves = _leaf_components()
@@ -513,6 +559,40 @@ class TestHarnessCatalog:
             field.name for field in dataclasses.fields(ResolvedBundle)
         )
         assert resolved_fields == ("name", "members", "requires")
+
+    def test_enabled_components_unions_sci_then_lab_in_first_seen_order(self):
+        catalog = _enable_catalog()
+        ids = tuple(spec.id for spec in catalog.enabled_components(("sci", "lab")))
+        assert ids == ("skill.notes", "rule.style", "agent.reviewer")
+
+    def test_enabled_components_unions_lab_then_sci_in_first_seen_order(self):
+        catalog = _enable_catalog()
+        ids = tuple(spec.id for spec in catalog.enabled_components(("lab", "sci")))
+        assert ids == ("skill.notes", "agent.reviewer", "rule.style")
+
+    def test_enabled_components_empty_tuple_returns_empty(self):
+        catalog = _enable_catalog()
+        assert catalog.enabled_components(()) == ()
+
+    def test_enabled_components_unknown_name_raises_unknown_bundle(self):
+        catalog = _enable_catalog()
+        with pytest.raises(CatalogError) as ei:
+            catalog.enabled_components(("nope",))
+        message = str(ei.value)
+        assert "unknown-bundle" in message
+        assert "sci" in message
+        assert "lab" in message
+
+    def test_enabled_components_none_with_empty_bundles_returns_all_components(self):
+        catalog = _enable_catalog(bundles=())
+        assert catalog.components != ()
+        assert catalog.enabled_components(None) == catalog.components
+
+    def test_enabled_components_named_bundle_with_empty_bundles_raises(self):
+        catalog = _enable_catalog(bundles=())
+        with pytest.raises(CatalogError) as ei:
+            catalog.enabled_components(("sci",))
+        assert "unknown-bundle" in str(ei.value)
 
 
 class TestLoadHarnessCatalog:
@@ -747,15 +827,15 @@ path = "widgets/extra.md"
         with pytest.raises(CatalogError):
             load_harness_catalog(tmp_path, SHA, CAPABILITIES)
 
-    def test_rejects_missing_daily_bundle(self, tmp_path):
+    def test_loads_without_daily_bundle(self, tmp_path):
         _write_harness_toml(tmp_path, _toml_without_bundle("daily"))
-        with pytest.raises(CatalogError):
-            load_harness_catalog(tmp_path, SHA, CAPABILITIES)
+        catalog = load_harness_catalog(tmp_path, SHA, CAPABILITIES)
+        assert tuple(bundle.name for bundle in catalog.bundles) == ("dev",)
 
-    def test_rejects_missing_dev_bundle(self, tmp_path):
+    def test_loads_without_dev_bundle(self, tmp_path):
         _write_harness_toml(tmp_path, _toml_without_bundle("dev"))
-        with pytest.raises(CatalogError):
-            load_harness_catalog(tmp_path, SHA, CAPABILITIES)
+        catalog = load_harness_catalog(tmp_path, SHA, CAPABILITIES)
+        assert tuple(bundle.name for bundle in catalog.bundles) == ("daily",)
 
     def test_does_not_load_catalog_toml(self, tmp_path):
         (tmp_path / "catalog.toml").write_text(CANONICAL_TOML, encoding="utf-8")

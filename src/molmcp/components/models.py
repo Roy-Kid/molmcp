@@ -33,7 +33,8 @@ class CatalogError(ValueError):
     when its checkouts and their ``component_root`` strings disagree, and
     its ``root_for`` raises it for a source the fold was not built from,
     with ``unknown-source`` in the message — the same register
-    :meth:`HarnessCatalog.get` and :meth:`HarnessCatalog.get_bundle` use.
+    :meth:`HarnessCatalog.get`, :meth:`HarnessCatalog.get_bundle`, and
+    :meth:`HarnessCatalog.enabled_components` use.
     So the type does not mean "one catalog file was rejected"; it means a
     harness catalog, or something assembled directly out of several of
     them, cannot be accepted. A second error family for that one message
