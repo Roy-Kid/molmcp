@@ -267,7 +267,9 @@ def place_components(
         if destination.exists():
             replaced.append(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(remap_frontmatter(text, host), encoding="utf-8")
+        destination.write_text(
+            remap_frontmatter(text, host), encoding="utf-8", newline="\n"
+        )
         installed.append(destination)
 
     return PlacementReport(

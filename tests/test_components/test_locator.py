@@ -118,6 +118,20 @@ class TestParseHarnessLocator:
         assert parsed.repo == "repo"
         assert parsed.ref == "dev"
 
+    def test_a_leading_slash_is_local_on_every_platform(self):
+        from pathlib import PureWindowsPath
+
+        raw = "/opt/harness/mine"
+        # Windows Path.is_absolute() is False without a drive letter; a
+        # leading slash must still be a filesystem path, not owner/repo.
+        assert not PureWindowsPath(raw).is_absolute()
+        parsed = parse_harness_locator(raw)
+        assert parsed.kind == "local"
+        assert parsed.locator == raw
+        assert parsed.origin_key == str(Path(raw).expanduser().resolve())
+        assert parsed.owner == ""
+        assert parsed.repo == ""
+
     def test_absolute_path_is_local_with_resolved_origin_key(self, tmp_path: Path):
         raw = str(tmp_path / "harness")
         parsed = parse_harness_locator(raw)

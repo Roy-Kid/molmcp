@@ -1014,7 +1014,8 @@ def test_the_real_locator_serves_an_absolute_path_without_rewriting_it(
     )
 
     assert settings_file.read_bytes() == before
-    assert str(checkout) in settings_file.read_text(encoding="utf-8")
+    stored = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert stored["harness"][0]["locator"] == str(checkout)
 
 
 @pytest.mark.parametrize(

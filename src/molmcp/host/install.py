@@ -65,9 +65,13 @@ def _home_path(parts: tuple[str, ...]) -> Path:
 
 
 def _write(dest: Path, text: str) -> Path:
-    """Create *dest*'s parent, write *text* as UTF-8, and return *dest*."""
+    """Create *dest*'s parent, write *text* as UTF-8 LF, and return *dest*.
+
+    ``newline="\\n"`` is load-bearing: the default on Windows is ``\\r\\n``,
+    which would make the adapter and the usage skill differ by host.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(text, encoding="utf-8")
+    dest.write_text(text, encoding="utf-8", newline="\n")
     return dest
 
 

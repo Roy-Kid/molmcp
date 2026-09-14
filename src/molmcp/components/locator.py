@@ -61,7 +61,8 @@ def parse_harness_locator(text: str) -> ParsedHarnessLocator:
     host as ``github.com``. A *ref* after ``@`` on the shorthand form is
     stored on the result and is not part of the origin key.
 
-    Absolute paths and ``~/…`` (also ``~\\…`` on Windows) are local. The
+    Absolute paths (a leading ``/``, a Windows drive or UNC share) and
+    ``~/…`` (also ``~\\…`` on Windows) are local. The
     origin key is ``str(Path(text).expanduser().resolve())``; the path
     need not exist. A platform-absolute path may contain backslashes —
     that is how ``Path`` stringifies on Windows. Relative paths,
@@ -125,11 +126,13 @@ def _reject_surface(text: str) -> None:
 def _is_local_locator(text: str) -> bool:
     """True when *text* names a filesystem path rather than a GitHub origin.
 
-    ``~/…`` is local on every platform. ``Path.is_absolute()`` is the
-    rest: a leading ``/`` on POSIX, a drive letter or UNC share on
-    Windows. Existence is not required.
+    ``~/…`` and a leading ``/`` are local on every platform — a
+    settings file that spells ``/opt/harness`` must not become a GitHub
+    shorthand just because Windows ``Path.is_absolute()`` is False
+    without a drive letter. ``Path.is_absolute()`` covers the rest: a
+    drive letter or UNC share on Windows. Existence is not required.
     """
-    if text.startswith(("~/", "~\\")):
+    if text.startswith(("~/", "~\\", "/")):
         return True
     return Path(text).is_absolute()
 
