@@ -15,8 +15,11 @@ This module is Layer 2 and imports the standard library only. Nothing under
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 Host = Literal["grok", "claude", "cursor", "codex"]
@@ -41,25 +44,19 @@ class HostLayout:
         skill_dir: Directory holding the managed usage constitution
             ``SKILL.md``. Its last part is always :data:`SKILL_NAME`.
         adapter: Stable pointer file ``molmcp-adapter.md``.
-        commands: Directory of one-line stubs, one per dev slash command
-            such as ``/mol:spec``; the bodies stay under *molmcp_dev*.
         agents: Host agents root. Only
             :func:`~molmcp.host.place.place_components` writes there, and
             only the ``agent`` components a catalog declares by name, so a
             user's own files are left alone.
         rules: Host rules root. Written on the same terms as *agents*, for
             ``rule`` components.
-        molmcp_dev: Tree that holds the full dev harness bodies once
-            :func:`~molmcp.host.activate_dev` has copied them in.
     """
 
     mcp_json: tuple[str, ...]
     skill_dir: tuple[str, ...]
     adapter: tuple[str, ...]
-    commands: tuple[str, ...]
     agents: tuple[str, ...]
     rules: tuple[str, ...]
-    molmcp_dev: tuple[str, ...]
 
 
 HOSTS: dict[Host, HostLayout] = {
@@ -67,37 +64,29 @@ HOSTS: dict[Host, HostLayout] = {
         mcp_json=(".mcp.json",),
         skill_dir=(".grok", "skills", SKILL_NAME),
         adapter=(".grok", "molmcp-adapter.md"),
-        commands=(".grok", "commands"),
         agents=(".grok", "agents"),
         rules=(".grok", "rules"),
-        molmcp_dev=(".grok", "molmcp-dev"),
     ),
     "claude": HostLayout(
         mcp_json=(".claude.json",),
         skill_dir=(".claude", "skills", SKILL_NAME),
         adapter=(".claude", "molmcp-adapter.md"),
-        commands=(".claude", "commands"),
         agents=(".claude", "agents"),
         rules=(".claude", "rules"),
-        molmcp_dev=(".claude", "molmcp-dev"),
     ),
     "cursor": HostLayout(
         mcp_json=(".cursor", "mcp.json"),
         skill_dir=(".cursor", "skills", SKILL_NAME),
         adapter=(".cursor", "molmcp-adapter.md"),
-        commands=(".cursor", "commands"),
         agents=(".cursor", "agents"),
         rules=(".cursor", "rules"),
-        molmcp_dev=(".cursor", "molmcp-dev"),
     ),
     "codex": HostLayout(
         mcp_json=(".codex", "mcp.json"),
         skill_dir=(".codex", "skills", SKILL_NAME),
         adapter=(".codex", "molmcp-adapter.md"),
-        commands=(".codex", "commands"),
         agents=(".codex", "agents"),
         rules=(".codex", "rules"),
-        molmcp_dev=(".codex", "molmcp-dev"),
     ),
 }
 """Layout per host, in the order ``molmcp init`` offers as ``--help`` choices."""
@@ -149,3 +138,103 @@ def default_skill_dir(host: Host) -> Path:
         ValueError: If *host* is not a known host.
     """
     return Path.home().joinpath(*layout_for(host).skill_dir)
+
+
+_KEY_LINE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_-]*):(.*)$")
+
+_FRONTMATTER_MAPS: Mapping[Host, Mapping[str, str]] = MappingProxyType(
+    {
+        "grok": MappingProxyType(
+            {
+                "name": "name",
+                "description": "description",
+                "when-to-use": "when-to-use",
+                "user-invocable": "user-invocable",
+                "disable-model-invocation": "disable-model-invocation",
+                "argument-hint": "argument-hint",
+            }
+        ),
+        "claude": MappingProxyType(
+            {
+                "name": "name",
+                "description": "description",
+                "user-invocable": "user-invocable",
+                "disable-model-invocation": "disable-model-invocation",
+                "argument-hint": "argument-hint",
+            }
+        ),
+        "cursor": MappingProxyType(
+            {
+                "name": "name",
+                "description": "description",
+                "disable-model-invocation": "disable-model-invocation",
+            }
+        ),
+        "codex": MappingProxyType(
+            {
+                "name": "name",
+                "description": "description",
+            }
+        ),
+    }
+)
+
+
+def remap_frontmatter(text: str, host: Host) -> str:
+    """Rewrite top-level YAML keys for *host*; drop unmapped keys.
+
+    Line-oriented: values are not parsed. A document without a closed
+    ``---`` fence is returned unchanged. Output uses ``\\n`` newlines.
+
+    Args:
+        text: File contents, typically a SKILL.md / agent / rule body.
+        host: Destination host; validated via :func:`layout_for`.
+
+    Returns:
+        Remapped text, or *text* when there is no closed fence.
+
+    Raises:
+        ValueError: If *host* is not a known host.
+    """
+    layout_for(host)
+    mapping = _FRONTMATTER_MAPS[host]
+    lines = text.splitlines()
+    if not lines or lines[0].rstrip() != "---":
+        return text
+    close: int | None = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.rstrip() == "---":
+            close = index
+            break
+    if close is None:
+        return text
+    blocks: list[tuple[str, list[str]]] = []
+    current_key: str | None = None
+    current_lines: list[str] = []
+    for line in lines[1:close]:
+        match = None
+        if not line.startswith((" ", "\t")):
+            match = _KEY_LINE.match(line)
+        if match is not None:
+            if current_key is not None:
+                blocks.append((current_key, current_lines))
+            current_key = match.group(1)
+            current_lines = [line]
+            continue
+        if current_key is None:
+            continue
+        current_lines.append(line)
+    if current_key is not None:
+        blocks.append((current_key, current_lines))
+    out = ["---"]
+    for key, block in blocks:
+        dest = mapping.get(key)
+        if dest is None:
+            continue
+        first = block[0]
+        rest = first.split(":", 1)[1]
+        out.append(f"{dest}:{rest}")
+        out.extend(block[1:])
+    out.append("---")
+    out.extend(lines[close + 1 :])
+    return "\n".join(out) + "\n"

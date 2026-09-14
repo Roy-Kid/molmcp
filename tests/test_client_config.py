@@ -184,18 +184,8 @@ INIT_HOSTS: tuple[str, ...] = ("grok", "claude", "cursor", "codex")
 #: than replaces.
 INIT_PRIMITIVES: tuple[str, ...] = (
     "install_skill",
-    "materialize_daily",
     "write_adapter",
-    "materialize_dev_index",
-    "activate_dev",
     "install_harness_components",
-)
-
-#: Primitives that take a checkout; each must get the resolved value.
-SOURCE_CONSUMERS: tuple[str, ...] = (
-    "materialize_daily",
-    "materialize_dev_index",
-    "activate_dev",
 )
 
 
@@ -323,11 +313,6 @@ class TestInitParserKeepsOneHostList:
 class TestInitComposesTheHostPrimitives:
     """``cli._init`` resolves the checkout once, then writes in a fixed order."""
 
-    def test_the_bundle_source_is_resolved_exactly_once(self) -> None:
-        function = _init_function()
-
-        assert len(_calls_to(function, "resolve_bundle_source")) == 1
-
     def test_each_primitive_is_its_own_statement_in_order(self) -> None:
         body = _init_function().body
 
@@ -359,40 +344,7 @@ class TestInitComposesTheHostPrimitives:
             < _statement_indices(body, "install_harness_components")[0]
         )
 
-    def test_the_resolver_runs_before_the_primitives_it_feeds(self) -> None:
-        body = _init_function().body
-
-        resolved_at = _statement_indices(body, "resolve_bundle_source")
-        primitives_at = [
-            index
-            for name in INIT_PRIMITIVES
-            for index in _statement_indices(body, name)
-        ]
-
-        assert len(resolved_at) == 1
-        assert primitives_at != []
-        assert resolved_at[0] < min(primitives_at)
-
-    def test_args_source_is_read_only_by_the_resolver(self) -> None:
-        function = _init_function()
-
-        resolvers = _calls_to(function, "resolve_bundle_source")
-
-        assert len(resolvers) == 1
-        assert len(_args_source_reads(function)) == 1
-        assert len(_args_source_reads(resolvers[0])) == 1
-
-    @pytest.mark.parametrize("name", SOURCE_CONSUMERS)
-    def test_a_source_consumer_gets_the_resolved_value(self, name: str) -> None:
-        function = _init_function()
-        resolved = _resolved_binding(function)
-
-        calls = _calls_to(function, name)
-
-        assert len(calls) == 1
-        assert resolved in _argument_names(calls[0])
-
-    def test_a_source_that_is_not_a_directory_fails_loudly(
+    def test_init_does_not_take_a_source_flag(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -401,17 +353,10 @@ class TestInitComposesTheHostPrimitives:
         from molmcp import cli
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "molmcp.client_config.default_plane_ids",
-            lambda: ("molcrafts", "molvis"),
-        )
-        not_a_checkout = tmp_path / "checkout.md"
-        not_a_checkout.write_text("# not a checkout\n", encoding="utf-8")
-
-        code = cli.main(["init", "grok", "--source", str(not_a_checkout)])
-
-        assert code != 0
-        assert str(not_a_checkout) in capsys.readouterr().err
+        with pytest.raises(SystemExit) as ei:
+            cli.main(["init", "grok", "--source", str(tmp_path)])
+        assert ei.value.code == 2
+        assert "unrecognized arguments" in capsys.readouterr().err
 
 
 #: The shipped usage constitution, read straight from the package it lives in.
@@ -550,4 +495,7 @@ class TestTheInstalledSkillIsThePinnedFile:
 
         written = host_package.install_skill("grok")
 
-        assert written.read_text(encoding="utf-8") == _skill_text()
+        text = written.read_text(encoding="utf-8")
+        assert "when-to-use:" in text
+        assert "metadata:" not in text
+        assert "SYMBOL_NOT_FOUND" in text

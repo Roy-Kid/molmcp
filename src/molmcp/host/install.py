@@ -26,11 +26,10 @@ This module is Layer 2 and imports the standard library only (plus
 
 from __future__ import annotations
 
-import shutil
 from importlib.resources import files
 from pathlib import Path
 
-from .layout import SKILL_NAME, Host, layout_for
+from .layout import Host, layout_for, remap_frontmatter
 
 ADAPTER_TEXT = """# molmcp adapter
 
@@ -38,8 +37,7 @@ Wired by `molmcp init`. This file is a pointer, not a constitution.
 
 - Usage skill: `molcrafts` (auto-loaded). Do not edit the managed SKILL.md.
 - MCP: one `molcrafts` server from `molmcp serve`.
-- Daily skills: this host's `skills/` directory.
-- Dev harness: `molmcp-dev/` (full bodies) and `commands/` (stubs only).
+- Catalog components: this host's `skills/`, `agents/`, and `rules/` directories.
 
 Do not copy skill, agent, or rule bodies into this file.
 """
@@ -50,12 +48,6 @@ or rule text, no timestamp, no home path, and no content hash. Every host in
 :data:`~molmcp.host.layout.HOSTS` receives these exact bytes, so two machines
 wired by the same molmcp version hold the same file.
 """
-
-_DEV_STUB_TEMPLATE = """# /mol:{stem}
-
-Dev command stub. The full harness body lives under this host's `molmcp-dev/`.
-"""
-"""Body of one ``commands/<stem>.md`` stub. The dev body stays out of it."""
 
 
 def _home_path(parts: tuple[str, ...]) -> Path:
@@ -82,51 +74,6 @@ def _usage_skill_file() -> Path:
         Path of the ``SKILL.md`` shipped inside :mod:`molmcp.skill`.
     """
     return Path(str(files("molmcp.skill") / "SKILL.md"))
-
-
-def _copy_files(source: Path, dest: Path) -> tuple[Path, ...]:
-    """Copy every file under *source* into *dest*, keeping relative layout.
-
-    Args:
-        source: Directory to read from.
-        dest: Directory to write into; created on demand.
-
-    Returns:
-        The destination paths written, in sorted source order.
-    """
-    written = []
-    for origin in sorted(path for path in source.rglob("*") if path.is_file()):
-        target = dest / origin.relative_to(source)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(origin, target)
-        written.append(target)
-    return tuple(written)
-
-
-def resolve_bundle_source(source: Path | None) -> Path | None:
-    """Interpret the caller's ``--source`` checkout, once and only here.
-
-    ``None`` means "use the packaged backend", not "go and find a checkout":
-    no working directory, git root, sibling checkout, or environment variable
-    is consulted. A path that is not a directory fails here rather than
-    quietly degrading into the packaged backend.
-
-    Args:
-        source: A directory holding the ``daily/`` and ``dev/`` bundles, or
-            ``None`` to select the packaged backend.
-
-    Returns:
-        *source* unchanged when it is a directory, or ``None`` for the
-        packaged backend.
-
-    Raises:
-        FileNotFoundError: If *source* is given but is not a directory.
-    """
-    if source is None:
-        return None
-    if not source.is_dir():
-        raise FileNotFoundError(f"bundle source is not a directory: {source}")
-    return source
 
 
 def install_skill(host: Host) -> Path:
@@ -156,46 +103,8 @@ def install_skill(host: Host) -> Path:
     skill_dir = _home_path(layout_for(host).skill_dir)
     skill_dir.mkdir(parents=True, exist_ok=True)
     dest = skill_dir / "SKILL.md"
-    shutil.copy2(_usage_skill_file(), dest)
-    return dest
-
-
-def materialize_daily(host: Host, source: Path | None) -> tuple[Path, ...]:
-    """Copy the checkout's daily skills into *host*'s skills directory.
-
-    Every ``<source>/daily/skills/<name>/`` tree lands beside the managed
-    usage skill. A directory named :data:`~molmcp.host.layout.SKILL_NAME` is
-    skipped so the constitution written by :func:`install_skill` is never
-    clobbered, and the dev bundle is not read at all.
-
-    Args:
-        host: One of the known hosts.
-        source: A resolved checkout (see :func:`resolve_bundle_source`), or
-            ``None`` for the packaged backend, which carries no daily
-            bundle and so copies nothing.
-
-    Returns:
-        The destination paths written, empty when there is nothing to copy.
-
-    Raises:
-        ValueError: If *host* is not a known host. Checked before *source*,
-            so an unknown host raises even when nothing would be copied.
-    """
-    layout = layout_for(host)
-    if source is None:
-        return ()
-
-    daily_root = source / "daily" / "skills"
-    if not daily_root.is_dir():
-        return ()
-
-    skills_root = _home_path(layout.skill_dir).parent
-    written: list[Path] = []
-    for skill in sorted(path for path in daily_root.iterdir() if path.is_dir()):
-        if skill.name == SKILL_NAME:
-            continue
-        written.extend(_copy_files(skill, skills_root / skill.name))
-    return tuple(written)
+    text = _usage_skill_file().read_text(encoding="utf-8")
+    return _write(dest, remap_frontmatter(text, host))
 
 
 def write_adapter(host: Host) -> Path:
@@ -216,87 +125,8 @@ def write_adapter(host: Host) -> Path:
     return _write(_home_path(layout_for(host).adapter), ADAPTER_TEXT)
 
 
-def materialize_dev_index(host: Host, source: Path | None) -> tuple[Path, ...]:
-    """Write one slash-command stub per dev command into *host*'s commands.
-
-    Each ``<source>/dev/commands/<stem>.md`` becomes a short stub naming
-    ``/mol:<stem>``. The dev body itself is never copied here; it belongs to
-    :func:`activate_dev`.
-
-    Args:
-        host: One of the known hosts.
-        source: A resolved checkout (see :func:`resolve_bundle_source`), or
-            ``None`` for the packaged backend, which carries no dev bundle
-            and so leaves ``commands/`` uncreated.
-
-    Returns:
-        The stub paths written, empty when there is no dev command to index.
-
-    Raises:
-        ValueError: If *host* is not a known host. Checked before *source*,
-            so an unknown host raises even when no stub would be written.
-    """
-    layout = layout_for(host)
-    if source is None:
-        return ()
-
-    dev_commands = source / "dev" / "commands"
-    if not dev_commands.is_dir():
-        return ()
-
-    commands_root = _home_path(layout.commands)
-    origins = sorted(path for path in dev_commands.glob("*.md") if path.is_file())
-    return tuple(
-        _write(
-            commands_root / f"{origin.stem}.md",
-            _DEV_STUB_TEMPLATE.format(stem=origin.stem),
-        )
-        for origin in origins
-    )
-
-
-def activate_dev(host: Host, source: Path | None) -> Path | None:
-    """Copy the checkout's whole dev tree into *host*'s ``molmcp-dev/``.
-
-    This is the only destination that holds full dev bodies. The host's
-    ``agents/`` and ``rules/`` directories are written by
-    :func:`~molmcp.host.place.place_components` and by nothing else: it copies
-    the ``agent`` and ``rule`` rows a harness catalog declares, one named file
-    at a time, so a user's own files beside them are left alone.
-
-    Args:
-        host: One of the known hosts.
-        source: A resolved checkout (see :func:`resolve_bundle_source`), or
-            ``None`` for the packaged backend, which carries no dev bundle
-            and so leaves ``molmcp-dev/`` uncreated.
-
-    Returns:
-        The activated ``molmcp-dev/`` directory, or ``None`` when there is no
-        dev tree to activate.
-
-    Raises:
-        ValueError: If *host* is not a known host. Checked before *source*,
-            so an unknown host raises even when nothing would be activated.
-    """
-    layout = layout_for(host)
-    if source is None:
-        return None
-
-    dev_source = source / "dev"
-    if not dev_source.is_dir():
-        return None
-
-    dev_root = _home_path(layout.molmcp_dev)
-    shutil.copytree(dev_source, dev_root, dirs_exist_ok=True)
-    return dev_root
-
-
 __all__ = [
     "ADAPTER_TEXT",
-    "activate_dev",
     "install_skill",
-    "materialize_daily",
-    "materialize_dev_index",
-    "resolve_bundle_source",
     "write_adapter",
 ]

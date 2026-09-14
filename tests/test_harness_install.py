@@ -602,8 +602,10 @@ class TestTheManagedUsageSkillSurvives:
         assert _init() == 0
 
         installed = _host_file(home, "skills", "molcrafts", "SKILL.md")
-        assert installed.read_text(encoding="utf-8") == _packaged_constitution()
-        assert installed.read_text(encoding="utf-8") != _CLOBBER_TEXT
+        text = installed.read_text(encoding="utf-8")
+        assert "metadata:" not in text
+        assert "SYMBOL_NOT_FOUND" in text
+        assert text != _CLOBBER_TEXT
 
     def test_the_report_names_the_refusal_rather_than_hiding_it(
         self, clobbering: None
@@ -669,61 +671,6 @@ class TestOnlyTheActivatedCommitReachesTheHost:
 
         assert _host_file(home, "rules", "style.md").is_file()
         assert not _host_file(home, "rules", "draft.md").exists()
-
-
-class TestTheCheckoutRouteStillWorks:
-    """``--source DIRECTORY`` is a route this change adds beside, not replaces.
-
-    Both routes are asserted in one file on purpose: they write into the same
-    host directories from different origins, and a later change that quietly
-    dropped one would otherwise leave a suite that still passes.
-    """
-
-    def test_the_source_flag_alone_still_materializes_the_daily_bundle(
-        self, home: Path, cache: Path, tmp_path: Path
-    ) -> None:
-        _install(cache)
-        bundle = _bundle_checkout(tmp_path / "bundle")
-
-        assert _init("--source", str(bundle)) == 0
-
-        assert _host_file(home, "skills", "notes", "NOTE.md").is_file()
-
-    def test_the_source_flag_alone_still_writes_the_dev_stubs_and_bodies(
-        self, home: Path, cache: Path, tmp_path: Path
-    ) -> None:
-        _install(cache)
-        bundle = _bundle_checkout(tmp_path / "bundle")
-
-        assert _init("--source", str(bundle)) == 0
-
-        assert _host_file(home, "commands", "spec.md").is_file()
-        assert _host_file(home, "molmcp-dev", "commands", "spec.md").is_file()
-
-    def test_both_routes_run_in_one_init(
-        self, home: Path, synced: str, tmp_path: Path
-    ) -> None:
-        """One command, two origins: the checkout bundle and the commit tree."""
-        bundle = _bundle_checkout(tmp_path / "bundle")
-
-        assert _init("--source", str(bundle)) == 0
-
-        assert _host_file(home, "skills", "notes", "NOTE.md").is_file()
-        assert _host_file(home, "skills", "daily", "SKILL.md").read_text(
-            encoding="utf-8"
-        ) == (_DAILY_SKILL)
-
-    def test_a_source_that_is_not_a_directory_still_fails_loudly(
-        self, cache: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """The one interpretation of ``--source`` is still the only one."""
-        _install(cache)
-        not_a_checkout = tmp_path / "checkout.md"
-        not_a_checkout.write_text("# not a checkout\n", encoding="utf-8")
-
-        assert _init("--source", str(not_a_checkout)) != 0
-
-        assert str(not_a_checkout) in capsys.readouterr().err
 
 
 class TestInstallingTwiceIsIdempotent:

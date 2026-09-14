@@ -34,13 +34,12 @@ four stdlib values precisely so none of them is needed.
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
-from .layout import Host, HostLayout, layout_for
+from .layout import Host, HostLayout, layout_for, remap_frontmatter
 
 SKIP_NO_HOST_DESTINATION = "kind has no host destination"
 """Why a ``provider`` or ``overlay`` row is reported but not installed.
@@ -256,14 +255,19 @@ def place_components(
 
     for component, _ in planned:
         _require_file(component)
+    rewritten: list[tuple[ComponentFile, Path, str]] = []
+    for component, destination in planned:
+        rewritten.append(
+            (component, destination, component.source.read_text(encoding="utf-8"))
+        )
 
     installed: list[Path] = []
     replaced: list[Path] = []
-    for component, destination in planned:
+    for component, destination, text in rewritten:
         if destination.exists():
             replaced.append(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(component.source, destination)
+        destination.write_text(remap_frontmatter(text, host), encoding="utf-8")
         installed.append(destination)
 
     return PlacementReport(

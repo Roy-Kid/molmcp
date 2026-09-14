@@ -34,11 +34,7 @@ components into it. It imports the standard library only, so
 
 from .install import (
     ADAPTER_TEXT,
-    activate_dev,
     install_skill,
-    materialize_daily,
-    materialize_dev_index,
-    resolve_bundle_source,
     write_adapter,
 )
 from .layout import (
@@ -68,14 +64,10 @@ __all__ = [
     "Host",
     "HostLayout",
     "PlacementReport",
-    "activate_dev",
     "default_skill_dir",
     "default_write_path",
     "install_skill",
     "layout_for",
-    "materialize_daily",
-    "materialize_dev_index",
     "place_components",
-    "resolve_bundle_source",
     "write_adapter",
 ]

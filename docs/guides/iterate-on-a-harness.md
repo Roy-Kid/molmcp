@@ -272,15 +272,6 @@ naming an address; syncing it is the separate act of deciding to run it. A new
 install that has configured sources and synced none of them is in an ordinary
 state, not a broken one.
 
-## One route this is not
-
-You may meet `molmcp init <host> --source DIRECTORY`. It is an older, separate
-route that reads a checkout laid out as `daily/` and `dev/` directories, and it
-has nothing to do with the catalog: it does not read `harness.toml`, and the
-`daily` and `dev` *bundles* from step 1 are not what it is looking for despite
-the shared words. It is mentioned here only so that meeting it does not confuse
-you. Nothing in this guide uses it.
-
 ## Read next
 
 - [Harness catalog](../concepts/harness.md) — SHA identity, the full catalog grammar, and what serving does with a list of sources

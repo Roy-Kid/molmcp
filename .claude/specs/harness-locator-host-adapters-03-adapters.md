@@ -1,6 +1,6 @@
 ---
 title: Host 适配器：frontmatter 重映射并拆除 checkout 路由
-status: approved
+status: done
 created: 2026-09-11
 grilled: true
 ---
@@ -65,16 +65,16 @@ frontmatter 允许表是 `layout.py` 里 `HOSTS` 旁边的模块私有 `MappingP
 
 ## Tasks
 
-- [ ] Write failing unit tests for remap_frontmatter and the shrunk HostLayout (tests/test_host/test_layout.py → TestRemapFrontmatter, TestHostLayout)
-- [ ] Implement remap_frontmatter, private maps, and the five-field HostLayout in src/molmcp/host/layout.py
-- [ ] Write failing unit tests for remapped install_skill and deleted checkout primitives (tests/test_host/test_install.py → TestInstallSkill)
-- [ ] Generalize install_skill; delete checkout primitives; rewrite ADAPTER_TEXT
-- [ ] Write failing unit tests for remapped place_components (tests/test_host/test_place.py → TestPlaceComponents)
-- [ ] Remap frontmatter in place_components before write
-- [ ] Remove init --source from cli.py; update tests/test_client_config.py and tests/test_harness_install.py
-- [ ] Strike live --source / molmcp-dev / commands destinations from docs/concepts/harness.md and docs/guides/iterate-on-a-harness.md
-- [ ] Add regression example regressions/harness-locator-host-adapters-03-adapters.py (public API only; hard-coded goldens, no third-party runtime)
-- [ ] Run full check + test suite
+- [x] Write failing unit tests for remap_frontmatter and the shrunk HostLayout (tests/test_host/test_layout.py → TestRemapFrontmatter, TestHostLayout)
+- [x] Implement remap_frontmatter, private maps, and the five-field HostLayout in src/molmcp/host/layout.py
+- [x] Write failing unit tests for remapped install_skill and deleted checkout primitives (tests/test_host/test_install.py → TestInstallSkill)
+- [x] Generalize install_skill; delete checkout primitives; rewrite ADAPTER_TEXT
+- [x] Write failing unit tests for remapped place_components (tests/test_host/test_place.py → TestPlaceComponents)
+- [x] Remap frontmatter in place_components before write
+- [x] Remove init --source from cli.py; update tests/test_client_config.py and tests/test_harness_install.py
+- [x] Strike live --source / molmcp-dev / commands destinations from docs/concepts/harness.md and docs/guides/iterate-on-a-harness.md
+- [x] Add regression example regressions/harness-locator-host-adapters-03-adapters.py (public API only; hard-coded goldens, no third-party runtime)
+- [x] Run full check + test suite
 
 ## Testing strategy
 

@@ -40,37 +40,29 @@ LAYOUTS: dict[Host, dict[str, tuple[str, ...]]] = {
         "mcp_json": (".mcp.json",),
         "skill_dir": (".grok", "skills", "molcrafts"),
         "adapter": (".grok", "molmcp-adapter.md"),
-        "commands": (".grok", "commands"),
         "agents": (".grok", "agents"),
         "rules": (".grok", "rules"),
-        "molmcp_dev": (".grok", "molmcp-dev"),
     },
     "claude": {
         "mcp_json": (".claude.json",),
         "skill_dir": (".claude", "skills", "molcrafts"),
         "adapter": (".claude", "molmcp-adapter.md"),
-        "commands": (".claude", "commands"),
         "agents": (".claude", "agents"),
         "rules": (".claude", "rules"),
-        "molmcp_dev": (".claude", "molmcp-dev"),
     },
     "cursor": {
         "mcp_json": (".cursor", "mcp.json"),
         "skill_dir": (".cursor", "skills", "molcrafts"),
         "adapter": (".cursor", "molmcp-adapter.md"),
-        "commands": (".cursor", "commands"),
         "agents": (".cursor", "agents"),
         "rules": (".cursor", "rules"),
-        "molmcp_dev": (".cursor", "molmcp-dev"),
     },
     "codex": {
         "mcp_json": (".codex", "mcp.json"),
         "skill_dir": (".codex", "skills", "molcrafts"),
         "adapter": (".codex", "molmcp-adapter.md"),
-        "commands": (".codex", "commands"),
         "agents": (".codex", "agents"),
         "rules": (".codex", "rules"),
-        "molmcp_dev": (".codex", "molmcp-dev"),
     },
 }
 
@@ -80,15 +72,13 @@ FIELD_NAMES = frozenset(
         "mcp_json",
         "skill_dir",
         "adapter",
-        "commands",
         "agents",
         "rules",
-        "molmcp_dev",
     }
 )
 
-#: Only the bundle destinations added by this spec.
-BUNDLE_FIELDS = ("adapter", "commands", "agents", "rules", "molmcp_dev")
+#: Catalog-placed destinations (usage skill and MCP JSON stay elsewhere).
+BUNDLE_FIELDS = ("adapter", "agents", "rules")
 
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "molmcp"
 HOST_PKG = SRC / "host"
@@ -100,6 +90,8 @@ FORBIDDEN_ROOTS: tuple[str, ...] = (
     "molmcp.server",
     "molmcp.providers",
     "molmcp.discovery",
+    "molmcp.components",
+    "molmcp.harness",
 )
 
 
@@ -234,3 +226,70 @@ class TestHostLayout:
         }
 
         assert {name: hits for name, hits in offenders.items() if hits} == {}
+
+
+_FENCE = """\
+---
+name: daily
+description: >
+  A daily skill
+when-to-use: every morning
+user-invocable: false
+disable-model-invocation: true
+argument-hint: "<topic>"
+tools: Read, Grep
+model: sonnet
+metadata:
+  author: molmcp
+---
+# body
+"""
+
+
+class TestRemapFrontmatter:
+    def test_grok_keeps_when_to_use_and_drops_tools(self) -> None:
+        from molmcp.host.layout import remap_frontmatter
+
+        out = remap_frontmatter(_FENCE, "grok")
+        assert "when-to-use: every morning" in out
+        assert 'argument-hint: "<topic>"' in out
+        assert "tools:" not in out
+        assert "metadata:" not in out
+        assert "# body" in out
+
+    def test_claude_drops_when_to_use(self) -> None:
+        from molmcp.host.layout import remap_frontmatter
+
+        out = remap_frontmatter(_FENCE, "claude")
+        assert "when-to-use:" not in out
+        assert "user-invocable: false" in out
+        assert "argument-hint:" in out
+
+    def test_cursor_keeps_only_three_keys(self) -> None:
+        from molmcp.host.layout import remap_frontmatter
+
+        out = remap_frontmatter(_FENCE, "cursor")
+        assert "name: daily" in out
+        assert "disable-model-invocation: true" in out
+        assert "user-invocable:" not in out
+        assert "argument-hint:" not in out
+
+    def test_codex_keeps_name_and_description(self) -> None:
+        from molmcp.host.layout import remap_frontmatter
+
+        out = remap_frontmatter(_FENCE, "codex")
+        assert "name: daily" in out
+        assert "description: >" in out
+        assert "disable-model-invocation:" not in out
+
+    def test_no_fence_is_unchanged(self) -> None:
+        from molmcp.host.layout import remap_frontmatter
+
+        raw = "# just a rule\n"
+        assert remap_frontmatter(raw, "grok") == raw
+
+    def test_folded_description_continuations_stay(self) -> None:
+        from molmcp.host.layout import remap_frontmatter
+
+        out = remap_frontmatter(_FENCE, "grok")
+        assert "  A daily skill" in out

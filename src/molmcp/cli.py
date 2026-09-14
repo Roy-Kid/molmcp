@@ -19,12 +19,8 @@ from .harness_install import install_harness_components
 from .harness_sync import relocate_pointer, rollback_source, sync_source
 from .host import (
     HOSTS,
-    activate_dev,
     default_write_path,
     install_skill,
-    materialize_daily,
-    materialize_dev_index,
-    resolve_bundle_source,
     write_adapter,
 )
 from .planes import (
@@ -140,16 +136,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="MCP JSON path (default: that host's user config).",
-    )
-    init.add_argument(
-        "--source",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help=(
-            "Checkout holding the daily/ and dev/ bundles to materialize "
-            "(default: the packaged usage skill only; nothing is probed for)."
-        ),
     )
 
     info = commands.add_parser("info", help="Show registry and index coverage.")
@@ -507,7 +493,6 @@ def _init(args: argparse.Namespace) -> int:
         ConfigurationError: If a harness source's pointer names a commit with
             no published tree.
     """
-    resolved = resolve_bundle_source(args.source)
     toggle, text = render_init(
         args.host,
         enable=args.enable,
@@ -521,18 +506,13 @@ def _init(args: argparse.Namespace) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     skill_path = install_skill(args.host)
-    daily = materialize_daily(args.host, resolved)
     adapter_path = write_adapter(args.host)
-    stubs = materialize_dev_index(args.host, resolved)
-    dev_root = activate_dev(args.host, resolved)
     placed = install_harness_components(args.host)
     print(
         f"wrote {path}  enabled={list(toggle.enabled)}  "
         f"disabled={list(toggle.disabled)}\n"
         f"wrote {skill_path}\n"
-        f"wrote {adapter_path}, {len(daily)} daily skill file(s), "
-        f"{len(stubs)} dev command stub(s), and dev harness "
-        f"{dev_root if dev_root is not None else '(none: no checkout given)'}\n"
+        f"wrote {adapter_path}\n"
         f"placed {len(placed.installed)} harness catalog component file(s), "
         f"{len(placed.skipped)} refused",
         file=sys.stderr,

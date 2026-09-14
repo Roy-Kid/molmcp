@@ -212,9 +212,7 @@ filename is joined onto a root the caller passes —
 in `src/` where that name is resolved at all. The only roots molmcp itself ever
 passes are the trees of the commits its activation pointers name — one root per
 activated source, read in the order the settings file names them. `molmcp serve`
-does not look beside itself for a catalog, and neither does `molmcp init`;
-`molmcp init <host> --source PATH` takes the checkout as an explicit argument
-and probes for nothing.
+does not look beside itself for a catalog, and neither does `molmcp init`.
 
 This is the same rule the rest of molmcp follows for `molcrafts.json` and for
 the workspace source: a tool that picks up whatever file happens to be next to
