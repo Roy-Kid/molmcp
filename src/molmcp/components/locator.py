@@ -61,10 +61,12 @@ def parse_harness_locator(text: str) -> ParsedHarnessLocator:
     host as ``github.com``. A *ref* after ``@`` on the shorthand form is
     stored on the result and is not part of the origin key.
 
-    Absolute paths and ``~/…`` are local. The origin key is
-    ``str(Path(text).expanduser().resolve())``; the path need not exist.
-    Relative paths, whitespace, ``http://``, a ``github:`` prefix, SSH,
-    extra URL path segments, and backslashes raise.
+    Absolute paths and ``~/…`` (also ``~\\…`` on Windows) are local. The
+    origin key is ``str(Path(text).expanduser().resolve())``; the path
+    need not exist. A platform-absolute path may contain backslashes —
+    that is how ``Path`` stringifies on Windows. Relative paths,
+    whitespace, ``http://``, a ``github:`` prefix, SSH, extra URL path
+    segments, and backslashes *in a GitHub locator* raise.
 
     Args:
         text: Locator as the operator wrote it.
@@ -76,7 +78,7 @@ def parse_harness_locator(text: str) -> ParsedHarnessLocator:
         LocatorError: If ``text`` is not an accepted locator.
     """
     _reject_surface(text)
-    if text.startswith("/") or text.startswith("~/"):
+    if _is_local_locator(text):
         return ParsedHarnessLocator(
             locator=text,
             kind="local",
@@ -85,6 +87,8 @@ def parse_harness_locator(text: str) -> ParsedHarnessLocator:
             owner="",
             repo="",
         )
+    if "\\" in text:
+        raise LocatorError(f"harness locator must be POSIX (no backslash): {text!r}")
     owner, repo, ref = _parse_github(text)
     return ParsedHarnessLocator(
         locator=text,
@@ -101,9 +105,13 @@ def _reject_surface(text: str) -> None:
         raise LocatorError("harness locator must not be empty")
     if any(ch.isspace() for ch in text):
         raise LocatorError(f"harness locator must not contain whitespace: {text!r}")
-    if "\\" in text:
-        raise LocatorError(f"harness locator must be POSIX (no backslash): {text!r}")
-    if text.startswith("./") or text.startswith("../") or text in {".", ".."}:
+    if (
+        text in {".", ".."}
+        or text.startswith("./")
+        or text.startswith("../")
+        or text.startswith(".\\")
+        or text.startswith("..\\")
+    ):
         raise LocatorError(f"relative path is not a harness locator: {text!r}")
     lowered = text.lower()
     if lowered.startswith("http://"):
@@ -112,6 +120,18 @@ def _reject_surface(text: str) -> None:
         raise LocatorError(f"github: prefix is not a harness locator: {text!r}")
     if lowered.startswith("ssh://") or lowered.startswith("git@"):
         raise LocatorError(f"SSH is not a harness locator: {text!r}")
+
+
+def _is_local_locator(text: str) -> bool:
+    """True when *text* names a filesystem path rather than a GitHub origin.
+
+    ``~/…`` is local on every platform. ``Path.is_absolute()`` is the
+    rest: a leading ``/`` on POSIX, a drive letter or UNC share on
+    Windows. Existence is not required.
+    """
+    if text.startswith(("~/", "~\\")):
+        return True
+    return Path(text).is_absolute()
 
 
 def _parse_github(text: str) -> tuple[str, str, str]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import sys
 from pathlib import Path
 
 import pytest
@@ -184,10 +185,20 @@ class TestParseHarnessLocator:
         with pytest.raises(LocatorError):
             parse_harness_locator("https://github.com/MolCrafts/harness/tree/main")
 
-    @pytest.mark.parametrize("raw", [r"C:\harness", r"MolCrafts\harness"])
-    def test_backslash_raises(self, raw: str):
+    def test_backslash_in_a_github_locator_raises(self):
         with pytest.raises(LocatorError):
-            parse_harness_locator(raw)
+            parse_harness_locator(r"MolCrafts\harness")
+
+    def test_a_windows_drive_path_is_local_only_on_windows(self):
+        raw = r"C:\harness"
+        if sys.platform == "win32":
+            parsed = parse_harness_locator(raw)
+            assert parsed.kind == "local"
+            assert parsed.locator == raw
+            assert parsed.origin_key == str(Path(raw).expanduser().resolve())
+        else:
+            with pytest.raises(LocatorError):
+                parse_harness_locator(raw)
 
     def test_ssh_locator_raises(self):
         with pytest.raises(LocatorError):

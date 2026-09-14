@@ -13,6 +13,7 @@ import dataclasses
 import inspect
 import json
 import pathlib
+import sys
 
 import pytest
 
@@ -900,10 +901,19 @@ class TestHarnessSource:
         with pytest.raises(ValueError):
             st.HarnessSource(name="mine", locator=value)
 
-    @pytest.mark.parametrize("value", [r"C:\harness", r"/home/me\harness"])
-    def test_a_locator_carrying_a_backslash_is_refused(self, value):
+    def test_a_github_locator_carrying_a_backslash_is_refused(self):
         with pytest.raises(ValueError):
-            st.HarnessSource(name="mine", locator=value)
+            st.HarnessSource(name="mine", locator=r"MolCrafts\harness")
+
+    def test_a_windows_drive_locator_is_local_only_on_windows(self):
+        raw = r"C:\harness"
+        if sys.platform == "win32":
+            source = st.HarnessSource(name="mine", locator=raw)
+            assert source.is_local is True
+            assert source.locator == raw
+        else:
+            with pytest.raises(ValueError):
+                st.HarnessSource(name="mine", locator=raw)
 
     def test_enable_empty_tuple_is_stored_as_the_all_off_sentinel(self):
         source = st.HarnessSource(
