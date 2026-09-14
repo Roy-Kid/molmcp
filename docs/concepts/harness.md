@@ -363,22 +363,23 @@ recovery.
 
 ### Authoring an entry, and what to do if you mistype one
 
-One verb writes the list, and it addresses one entry at a time by its `name`:
+One verb writes the list, and it addresses one origin at a time with a locator:
 
 ```bash
-molmcp config harness set --name official --owner MolCrafts --repo harness --ref main
-molmcp config harness remove --name official
+molmcp config harness set MolCrafts/harness --alias official
+molmcp config harness set MolCrafts/harness --alias official --enable sci --disable all
+molmcp config harness set ~/src/harness --alias local
+molmcp config harness remove official
 ```
 
-`--name` is required by both subcommands, because it is the whole address. A
-name already in the list is updated in place; a name that is not yet there is
-appended **last**, which is what keeps the order contract above from turning on
-the act of adding a source. The three coordinates are optional and default to
-nothing rather than to a value: leaving `--owner` off an entry that already has
-one keeps the one it has, and leaving it off a new entry leaves it empty. That
-is what lets a single entry be built up over several commands. Both subcommands
-take the same `--project` and `--local` scope flags as every other `config`
-write, and with neither they write the user file.
+The locator is a GitHub `owner/repo[@ref]`, a GitHub URL, or a `~/` / absolute
+path. `--alias` names the entry (default `origin` on first insert). `--enable`
+and `--disable` select catalog bundles on that source; they are not plane
+toggles. `molmcp init <host> --enable/--disable` still only mounts provider
+planes. A locator already in the list is updated in place; a new origin is
+appended **last**. Both subcommands take the same `--project` and `--local`
+scope flags as every other `config` write, and with neither they write the
+user file.
 
 They exist because the ordinary write verbs cannot reach this key. `harness` is
 a list whose elements are objects, while `config set` and `config add` each take
@@ -391,19 +392,15 @@ a coordinate was merely unset.
 
 Two things this verb deliberately does not do, and you will meet both.
 
-**It will write an entry that cannot serve.**
-`molmcp config harness set --name mine` exits 0 and stores
-`{"name": "mine", "owner": "", "repo": "", "ref": ""}` — the half-written state
-described above — and then every `molmcp serve` after it exits 2, naming `mine`
-and each coordinate it is missing, until they are filled in. The verb does not
-pre-empt that, on purpose: what counts as a complete entry is decided at serve
-time and in exactly one place, and a second copy of that rule inside a `config`
-verb is how the two would come to disagree about a file they both read.
+**A locator that cannot be parsed is refused at set time.** Relative paths,
+`http://`, and the `github:` prefix are errors. A GitHub origin without a
+reachable checkout is complete enough to store; whether it can fetch is
+decided at `harness sync` / `serve`.
 
 **It cannot repair a settings file that no longer loads.** A settings file is
 validated on every *read*, and this verb reads the file before it writes it,
-exactly like every other one. So a typo inside an entry — `"onwer"` where you
-meant `"owner"` — does not merely fail to take effect, and no verb can undo it.
+exactly like every other one. An old entry still carrying `owner` / `repo` /
+`path` keys is a hard cut: re-run `molmcp config harness set <locator>`.
 `molmcp config list`, `get`, `set`, `add`, `remove` and `harness`, and
 `molmcp serve` itself, all stop with exit status 2 until it is corrected, and
 the message names the file and the entry by position, as `harness[0].onwer`.

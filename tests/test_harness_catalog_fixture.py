@@ -242,7 +242,7 @@ class TestHarnessCatalogFixture:
         assert catalog.sha == _SHA
         assert set(catalog.requires) <= _CAPABILITIES
         assert catalog.components
-        assert catalog.bundles
+        assert {b.name for b in catalog.bundles} == {"sci", "dev"}
 
     def test_example_carries_every_key_the_page_names(self, example_table):
         assert set(example_table) == _TOP_LEVEL_KEYS

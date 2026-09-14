@@ -1,6 +1,6 @@
 ---
 title: Harness locator 与可选 sci/dev 束的公开文档
-status: approved
+status: done
 created: 2026-09-11
 grilled: true
 ---
@@ -44,14 +44,14 @@ Not applicable (`science.required` is false).
 
 ## Tasks
 
-- [ ] Write failing unit tests for TestHarnessCatalogFixture pinning locator set, optional sci/dev, no --enable-bundle, plane-only init flags, kept marketplace-add grep
-- [ ] Rewrite docs/concepts/harness.example.toml so bundles are optional sci and dev
-- [ ] Rewrite docs/concepts/harness.md authoring, loop, and bundle grammar
-- [ ] Rewrite docs/guides/iterate-on-a-harness.md to set → sync → init with no --source and no bundle flags on init
-- [ ] Rewrite docs/reference/cli.md and docs/get-started/installation.md
-- [ ] Add regression example regressions/harness-locator-host-adapters-04-docs.py (public API only; hard-coded goldens, no third-party runtime)
-- [ ] Verify against load_harness_catalog on the published example with literal bundle names sci and dev
-- [ ] Run full check + test suite
+- [x] Write failing unit tests for TestHarnessCatalogFixture pinning locator set, optional sci/dev, no --enable-bundle, plane-only init flags, kept marketplace-add grep
+- [x] Rewrite docs/concepts/harness.example.toml so bundles are optional sci and dev
+- [x] Rewrite docs/concepts/harness.md authoring, loop, and bundle grammar
+- [x] Rewrite docs/guides/iterate-on-a-harness.md to set → sync → init with no --source and no bundle flags on init
+- [x] Rewrite docs/reference/cli.md and docs/get-started/installation.md
+- [x] Add regression example regressions/harness-locator-host-adapters-04-docs.py (public API only; hard-coded goldens, no third-party runtime)
+- [x] Verify against load_harness_catalog on the published example with literal bundle names sci and dev
+- [x] Run full check + test suite
 
 ## Testing strategy
 

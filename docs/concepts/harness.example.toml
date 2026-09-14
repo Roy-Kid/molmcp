@@ -82,7 +82,7 @@ entrypoint = "molpy_overlay:MolpyOverlay"
 
 [[component]]
 kind = "bundle"
-name = "daily"
+name = "sci"
 members = ["skill.daily", "rule.no-invented-api", "overlay.molpy"]
 
 [[component]]

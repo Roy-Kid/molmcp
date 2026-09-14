@@ -13,7 +13,7 @@ loop again after you change one. Three commands, and the rest of this page is
 what each of them is for:
 
 ```bash
-molmcp config harness set --name local --path /abs/path/to/checkout
+molmcp config harness set /abs/path/to/checkout --alias local
 molmcp harness sync local
 molmcp init claude
 ```
@@ -112,7 +112,7 @@ A **harness source** is one repository this install is allowed to take a harness
 from. You give it a name of your choosing and one origin:
 
 ```bash
-molmcp config harness set --name local --path /abs/path/to/checkout
+molmcp config harness set /abs/path/to/checkout --alias local
 ```
 
 ```

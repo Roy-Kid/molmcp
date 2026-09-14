@@ -132,7 +132,7 @@ nothing is worse than one that says so.
 
 `harness` is the one key in that table whose elements are objects, so the
 string-valued write verbs cannot author it and it has two subcommands of its own:
-`molmcp config harness set --name NAME [--owner OWNER] [--repo REPO] [--ref REF]`
+`molmcp config harness set MolCrafts/harness [--alias NAME] [--enable BUNDLE] [--disable BUNDLE]`
 upserts one entry, `molmcp config harness remove --name NAME` drops one, and both
 take the same `--project` / `--local` scope flags as the verbs above. What the
 list is for, what an entry means, what a half-written one does at serve time,

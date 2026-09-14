@@ -66,8 +66,8 @@ molmcp config get sources.molpy
 molmcp config set sources.molpy pkg:molpy
 molmcp config add excludes vendor               # list-valued keys
 molmcp config remove sources.molpy
-molmcp config harness set --name official --owner MolCrafts --repo harness --ref main
-molmcp config harness set --name mine --path /srv/harness-checkout
+molmcp config harness set MolCrafts/harness --alias official
+molmcp config harness set /srv/harness-checkout --alias mine
 molmcp config harness remove --name official
 ```
 
