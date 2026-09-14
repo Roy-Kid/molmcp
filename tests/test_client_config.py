@@ -91,6 +91,13 @@ def test_cli_init_writes_json_and_skill(tmp_path, monkeypatch, capsys):
     skill = tmp_path / ".grok" / "skills" / "molcrafts" / "SKILL.md"
     assert skill.is_file()
     assert "SYMBOL_NOT_FOUND" in skill.read_text(encoding="utf-8")
+    plan = tmp_path / ".grok" / "skills" / "molexp-plan" / "SKILL.md"
+    assert plan.is_file()
+    plan_text = plan.read_text(encoding="utf-8")
+    assert "One step per turn" in plan_text
+    assert "No writes before confirm" in plan_text
+    assert "SYMBOL_NOT_FOUND" in plan_text
+    assert "molexp-plan" in err
 
 
 def test_cli_init_cannot_disable_core(capsys, monkeypatch, tmp_path):
@@ -184,6 +191,7 @@ INIT_HOSTS: tuple[str, ...] = ("grok", "claude", "cursor", "codex")
 #: than replaces.
 INIT_PRIMITIVES: tuple[str, ...] = (
     "install_skill",
+    "install_extra_skills",
     "write_adapter",
     "install_harness_components",
 )
@@ -473,6 +481,9 @@ class TestSkillOffersTwoRecoveriesAndNoThird:
 
     def test_the_skill_never_tells_a_model_to_call_require_upstream(self) -> None:
         assert FORBIDDEN_SKILL_CALL not in _skill_text()
+
+    def test_the_constitution_points_at_molexp_plan(self) -> None:
+        assert "/molexp-plan" in _skill_text()
 
     def test_no_recovery_names_an_unpublished_mcp_suffixed_package(self) -> None:
         assert MCP_SUFFIXED_PACKAGE.findall(_skill_text()) == []

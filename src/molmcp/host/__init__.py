@@ -34,6 +34,8 @@ components into it. It imports the standard library only, so
 
 from .install import (
     ADAPTER_TEXT,
+    EXTRA_SKILLS,
+    install_extra_skills,
     install_skill,
     write_adapter,
 )
@@ -56,6 +58,7 @@ from .place import (
 
 __all__ = [
     "ADAPTER_TEXT",
+    "EXTRA_SKILLS",
     "HOSTS",
     "SKILL_NAME",
     "SKIP_MANAGED_USAGE_SKILL",
@@ -66,6 +69,7 @@ __all__ = [
     "PlacementReport",
     "default_skill_dir",
     "default_write_path",
+    "install_extra_skills",
     "install_skill",
     "layout_for",
     "place_components",

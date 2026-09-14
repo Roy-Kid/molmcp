@@ -7,11 +7,12 @@ in order, so no primitive can quietly grow a second destination.
 (constitution), adapter, daily bundle, dev bundle, checkout.
 
 Two backends supply content. The *packaged* backend reads the usage
-constitution from data files shipped inside the installed distribution (the
-``molmcp.skill`` package) and always applies. The *checkout* backend is a
-directory the caller passes in, holding the daily and dev bundles; when the
-caller passes none, every bundle primitive is a no-op that creates no empty
-directory. :func:`resolve_bundle_source` is the only place that choice is
+constitution and the extra skills in :data:`EXTRA_SKILLS` from data files
+shipped inside the installed distribution (the ``molmcp.skill`` package)
+and always applies. The *checkout* backend is a directory the caller
+passes in, holding the daily and dev bundles; when the caller passes none,
+every bundle primitive is a no-op that creates no empty directory.
+:func:`resolve_bundle_source` is the only place that choice is
 interpreted — nothing here probes the working directory, a git root, a
 sibling checkout, or an environment variable.
 
@@ -30,6 +31,14 @@ from importlib.resources import files
 from pathlib import Path
 
 from .layout import Host, layout_for, remap_frontmatter
+
+EXTRA_SKILLS: tuple[str, ...] = ("molexp-plan",)
+"""Packaged skills ``molmcp init`` writes beside the usage constitution.
+
+The constitution is :func:`install_skill` and this tuple is
+:func:`install_extra_skills`. A catalog row may overlay an extra skill;
+it cannot take the constitution's name.
+"""
 
 ADAPTER_TEXT = """# molmcp adapter
 
@@ -85,8 +94,8 @@ def install_skill(host: Host) -> Path:
     lands byte-identical, mode and modification time included, and there is
     no rendering step that could drift from the file it claims to reproduce.
 
-    Only the usage constitution is written: the adapter pointer and the daily
-    bundle have their own primitives.
+    Only the usage constitution is written: extra packaged skills, the
+    adapter pointer, and the daily bundle have their own primitives.
 
     Args:
         host: One of the known hosts.
@@ -105,6 +114,53 @@ def install_skill(host: Host) -> Path:
     dest = skill_dir / "SKILL.md"
     text = _usage_skill_file().read_text(encoding="utf-8")
     return _write(dest, remap_frontmatter(text, host))
+
+
+def _extra_skill_file(name: str) -> Path:
+    """Locate one packaged extra skill ``SKILL.md``.
+
+    Extra skills live in a subdirectory of :mod:`molmcp.skill` named after
+    the skill, so the constitution at the package root stays the one file
+    :func:`install_skill` copies.
+
+    Args:
+        name: A member of :data:`EXTRA_SKILLS`.
+
+    Returns:
+        Path of that skill's ``SKILL.md`` inside :mod:`molmcp.skill`.
+
+    Raises:
+        ValueError: If *name* is not a packaged extra skill.
+    """
+    if name not in EXTRA_SKILLS:
+        raise ValueError(f"unknown skill {name!r}; known: {', '.join(EXTRA_SKILLS)}")
+    return Path(str(files("molmcp.skill") / name / "SKILL.md"))
+
+
+def install_extra_skills(host: Host) -> tuple[Path, ...]:
+    """Overwrite every packaged extra skill for *host*.
+
+    Writes beside the usage constitution, never into its directory. Each
+    body is remapped the same way :func:`install_skill` remaps the
+    constitution, so a grok install drops ``metadata:`` here too.
+
+    Args:
+        host: One of the known hosts.
+
+    Returns:
+        The ``SKILL.md`` paths written, in :data:`EXTRA_SKILLS` order.
+
+    Raises:
+        ValueError: If *host* is not a known host.
+        OSError: If a packaged extra ``SKILL.md`` cannot be read.
+    """
+    skills_root = _home_path(layout_for(host).skill_dir[:-1])
+    written: list[Path] = []
+    for name in EXTRA_SKILLS:
+        dest = skills_root / name / "SKILL.md"
+        text = _extra_skill_file(name).read_text(encoding="utf-8")
+        written.append(_write(dest, remap_frontmatter(text, host)))
+    return tuple(written)
 
 
 def write_adapter(host: Host) -> Path:
@@ -127,6 +183,8 @@ def write_adapter(host: Host) -> Path:
 
 __all__ = [
     "ADAPTER_TEXT",
+    "EXTRA_SKILLS",
+    "install_extra_skills",
     "install_skill",
     "write_adapter",
 ]

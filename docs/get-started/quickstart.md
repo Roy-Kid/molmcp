@@ -2,7 +2,7 @@
 
 Stand up MolCrafts MCP: **`molmcp serve`** is the knowledge core with
 enabled providers FastMCP-mounted (`molvis_open`, …). `molmcp init <host>`
-writes that one MCP entry and the usage skill.
+writes that one MCP entry and the managed skills (`molcrafts`, `molexp-plan`).
 
 ## 1. List planes
 
@@ -51,8 +51,8 @@ JSON shape:
 ```
 
 Use absolute paths / `uv run --directory …` if the client’s PATH is thin.
-`molmcp init grok` writes this map (one composed `serve`) and the usage
-skill; drop mounts with `--disable`.
+`molmcp init grok` writes this map (one composed `serve`) and the managed
+skills (`molcrafts`, `molexp-plan`); drop mounts with `--disable`.
 
 ## 4. Knowledge plane tools
 

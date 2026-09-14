@@ -20,6 +20,7 @@ from .harness_sync import relocate_pointer, rollback_source, sync_source
 from .host import (
     HOSTS,
     default_write_path,
+    install_extra_skills,
     install_skill,
     write_adapter,
 )
@@ -40,7 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="molmcp",
         description=(
             "MolCrafts MCP: `serve` runs the composed core; "
-            "`init <host>` wires the host and installs the usage skill."
+            "`init <host>` wires the host and installs managed skills."
         ),
     )
     parser.add_argument(
@@ -105,8 +106,8 @@ def _build_parser() -> argparse.ArgumentParser:
     init = commands.add_parser(
         "init",
         help=(
-            "Install the usage skill and MCP config for one host. "
-            "molcrafts cannot be disabled."
+            "Install managed skills (molcrafts, molexp-plan) and MCP "
+            "config for one host. molcrafts cannot be disabled."
         ),
     )
     init.add_argument(
@@ -114,7 +115,7 @@ def _build_parser() -> argparse.ArgumentParser:
         # The host list has one home: repeating it here would be a second
         # table to keep in step with `molmcp.host.layout.HOSTS`.
         choices=tuple(HOSTS),
-        help="Host to wire (user-level skill + MCP JSON).",
+        help="Host to wire (user-level skills + MCP JSON).",
     )
     init.add_argument(
         "--enable",
@@ -506,12 +507,15 @@ def _init(args: argparse.Namespace) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     skill_path = install_skill(args.host)
+    extra_paths = install_extra_skills(args.host)
     adapter_path = write_adapter(args.host)
     placed = install_harness_components(args.host)
+    extra_lines = "".join(f"wrote {p}\n" for p in extra_paths)
     print(
         f"wrote {path}  enabled={list(toggle.enabled)}  "
         f"disabled={list(toggle.disabled)}\n"
         f"wrote {skill_path}\n"
+        f"{extra_lines}"
         f"wrote {adapter_path}\n"
         f"placed {len(placed.installed)} harness catalog component file(s), "
         f"{len(placed.skipped)} refused",

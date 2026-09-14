@@ -18,6 +18,8 @@ import pytest
 import molmcp.skill
 from molmcp.host.install import (
     ADAPTER_TEXT,
+    EXTRA_SKILLS,
+    install_extra_skills,
     install_skill,
     write_adapter,
 )
@@ -118,6 +120,33 @@ class TestInstallSkill:
 
     def test_its_signature_takes_no_source_argument(self) -> None:
         assert list(inspect.signature(install_skill).parameters) == ["host"]
+
+
+class TestInstallExtraSkills:
+    """Writes packaged extras beside the constitution, never into it."""
+
+    def test_the_catalog_is_the_frozen_tuple(self) -> None:
+        assert EXTRA_SKILLS == ("molexp-plan",)
+
+    def test_it_writes_molexp_plan_remapped_for_the_host(self, home: Path) -> None:
+        written = install_extra_skills("grok")
+
+        dest = home / ".grok" / "skills" / "molexp-plan" / "SKILL.md"
+        assert written == (dest,)
+        text = dest.read_text(encoding="utf-8")
+        assert "name: molexp-plan" in text
+        assert "One step per turn" in text
+        assert "when-to-use:" in text
+        assert "metadata:" not in text
+
+    def test_it_does_not_write_the_constitution(self, home: Path) -> None:
+        install_extra_skills("grok")
+
+        skills = home / ".grok" / "skills"
+        assert sorted(path.name for path in skills.iterdir()) == ["molexp-plan"]
+
+    def test_its_signature_takes_no_source_argument(self) -> None:
+        assert list(inspect.signature(install_extra_skills).parameters) == ["host"]
 
 
 class TestWriteAdapter:
