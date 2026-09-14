@@ -1,7 +1,7 @@
 # API reference
 
-Public Python surface of molmcp (multi-plane). Prefer the CLI for day-to-day
-use; import the builders when embedding a plane in tests or a custom host.
+Public Python surface of molmcp. Prefer the CLI for day-to-day use; import
+the builders when embedding a plane in tests or a custom host.
 
 ```python
 from molmcp import (
@@ -33,26 +33,26 @@ def create_plane(
 ```
 
 Build **one** FastMCP server for a single plane id. The MCP server **name** is
-the plane id (`catalog`, `molcrafts`, `molvis`, …). Tools register with bare
-names; clients see `molvis__open`, not `molmcp__molvis_open`.
+the plane id (`molcrafts`, `molvis`, …). Tools register with bare names;
+on a focused process clients see `molvis__open`. On `create_stack()` /
+`molmcp serve` they see `molcrafts__molvis_open`.
 
 | Plane | Content |
 |-------|---------|
-| `catalog` | `list_planes`, `route` |
-| `molcrafts` | Knowledge tools via `MolCraftsContextProvider` (needs config sources) |
+| `molcrafts` | Core: `list_planes` / `route` plus knowledge tools via `MolCraftsContextProvider` (needs config sources). Cannot be disabled. |
 | provider name | Entry-point or injected `Provider` for that product |
 
 ```python
 from molmcp import create_plane, load_config
 
-mcp = create_plane("catalog")
+mcp = create_plane("molcrafts", config=load_config())
 mcp.run(transport="stdio")
 ```
 
 ## `create_server`
 
-Compatibility wrapper that forwards to `create_plane`. New code should call
-`create_plane` with an explicit plane id.
+Compatibility wrapper that forwards to `create_plane`. Prefer `create_stack()`
+for the composed server (what `molmcp serve` runs).
 
 ## Planes helpers
 
@@ -62,7 +62,7 @@ list_plane_infos() -> list[PlaneInfo]
 route_task(task: str) -> dict
 ```
 
-Used by `molmcp planes` / `molmcp route` and by the catalog plane tools.
+Used by `molmcp planes` / `molmcp route` and by the molcrafts core tools.
 
 ## `Provider`
 

@@ -16,6 +16,7 @@ import ast
 from pathlib import Path
 
 import pytest
+from _ast_checks import reads_environment
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "molmcp"
 
@@ -31,22 +32,11 @@ _ALLOWED: dict[str, str] = {
 }
 
 
-def _reads_environment(tree: ast.AST) -> bool:
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv"}:
-            value = node.value
-            if isinstance(value, ast.Name) and value.id == "os":
-                return True
-        if isinstance(node, ast.Name) and node.id == "getenv":
-            return True
-    return False
-
-
 @pytest.mark.parametrize("path", sorted(SRC.rglob("*.py")), ids=lambda p: p.name)
 def test_no_module_reads_the_environment_for_configuration(path: Path):
     tree = ast.parse(path.read_text(encoding="utf-8"))
 
-    if not _reads_environment(tree):
+    if not reads_environment(tree):
         return
 
     assert path.relative_to(SRC).as_posix() in _ALLOWED, (
@@ -62,7 +52,7 @@ def test_the_allowlist_does_not_rot():
         name
         for name in _ALLOWED
         if not (SRC / name).is_file()
-        or not _reads_environment(ast.parse((SRC / name).read_text()))
+        or not reads_environment(ast.parse((SRC / name).read_text()))
     ]
 
     assert stale == []

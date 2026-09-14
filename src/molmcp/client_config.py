@@ -1,4 +1,22 @@
-"""Generate host MCP client configs — default all planes, --enable/--disable."""
+"""Generate host MCP client configs — core always on, providers togglable.
+
+MCP (Model Context Protocol) is the wire protocol an AI client uses to call
+tools; a *host* is one such client, and its MCP JSON is the file listing the
+servers it should launch. This module is where that JSON body is decided, and
+the functions defined here return text rather than writing it — the ``init``
+command in :mod:`molmcp.cli` is what puts it on disk.
+
+Where the file lands, and every other file ``molmcp init`` writes, is owned
+by :mod:`molmcp.host`. The five names imported from there below are the ones
+this module's own signatures need, re-exported as the very same objects and
+never copies, so the one host path table stays in ``molmcp.host.layout``.
+
+The primitives that *write* those destinations — ``install_skill`` and its
+siblings — are deliberately absent. They have a single importable home,
+:mod:`molmcp.host`; a second spelling here would be a second name to keep in
+step with it, and the file that copies the usage constitution should have one
+caller-visible source.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +25,29 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
 
-from .planes import list_plane_infos
+# Re-exported, not used here: nothing in this module resolves a path, since
+# home is joined in ``molmcp.host``. The name stays because it is what the
+# test suite patches to move ``Path.home()`` off the developer's real home,
+# and it is the very ``pathlib.Path`` class that ``molmcp.host`` joins its
+# layout tuples against — so patching it here redirects the writer too.
+from pathlib import Path as Path
+from typing import Any
 
-Host = Literal["grok", "claude", "cursor"]
+from .host import (
+    HOSTS,
+    SKILL_NAME,
+    Host,
+    default_write_path,
+    layout_for,
+)
+from .planes import (
+    CORE_PLANE_ID,
+    GONE_PLANE_IDS,
+    core_disable_message,
+    gone_plane_message,
+    list_plane_infos,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,17 +67,23 @@ class PlaneToggle:
 
 
 def default_plane_ids() -> tuple[str, ...]:
-    """Planes with installed deps (catalog, molcrafts, then α).
+    """Core plus provider planes with installed deps.
 
     Optional science packages that are not installed are omitted silently —
     no pytest-style skip; they simply never appear in client configs.
+    ``molcrafts`` is always first.
     """
     infos = list_plane_infos(include_unavailable_providers=False)
     ids = [p.id for p in infos]
-    # Prefer catalog → molcrafts first, then the rest sorted.
-    head = [x for x in ("catalog", "molcrafts") if x in ids]
-    tail = sorted(x for x in ids if x not in head)
-    return tuple(head + tail)
+    tail = sorted(x for x in ids if x != CORE_PLANE_ID)
+    return (CORE_PLANE_ID, *tail)
+
+
+def _ensure_core(planes: tuple[str, ...]) -> tuple[str, ...]:
+    if CORE_PLANE_ID in planes:
+        tail = tuple(p for p in planes if p != CORE_PLANE_ID)
+        return (CORE_PLANE_ID, *tail)
+    return (CORE_PLANE_ID, *planes)
 
 
 def resolve_plane_toggles(
@@ -51,33 +92,43 @@ def resolve_plane_toggles(
     disable: list[str] | tuple[str, ...] = (),
     available: tuple[str, ...] | None = None,
 ) -> PlaneToggle:
-    """Default: all planes on. Apply ``--disable`` then ``--enable``.
+    """Default: core + every provider on. Apply ``--disable`` then ``--enable``.
+
+    ``molcrafts`` cannot be disabled. Retired ids such as ``catalog`` error.
 
     Raises:
-        ValueError: unknown plane id in enable/disable.
+        ValueError: unknown plane id, retired plane, or attempt to disable core.
     """
-    all_planes = available if available is not None else default_plane_ids()
+    all_planes = _ensure_core(
+        available if available is not None else default_plane_ids()
+    )
     known = set(all_planes)
     enabled = set(all_planes)
 
     def _norm(name: str) -> str:
         return name.strip().lower()
 
-    for raw in disable:
-        plane = _norm(raw)
+    def _check(plane: str) -> None:
+        if plane in GONE_PLANE_IDS:
+            raise ValueError(gone_plane_message(plane))
+        if plane == CORE_PLANE_ID:
+            return
         if plane not in known:
             raise ValueError(f"unknown plane {plane!r}; known: {', '.join(all_planes)}")
+
+    for raw in disable:
+        plane = _norm(raw)
+        _check(plane)
+        if plane == CORE_PLANE_ID:
+            raise ValueError(core_disable_message())
         enabled.discard(plane)
 
     for raw in enable:
         plane = _norm(raw)
-        if plane not in known:
-            raise ValueError(f"unknown plane {plane!r}; known: {', '.join(all_planes)}")
+        _check(plane)
         enabled.add(plane)
 
-    if not enabled:
-        raise ValueError("at least one plane must remain enabled")
-
+    enabled.add(CORE_PLANE_ID)
     ordered = tuple(p for p in all_planes if p in enabled)
     disabled = tuple(p for p in all_planes if p not in enabled)
     return PlaneToggle(enabled=ordered, disabled=disabled, all_planes=all_planes)
@@ -103,31 +154,37 @@ def _molmcp_command() -> list[str]:
     return [sys.executable, "-m", "molmcp"]
 
 
-def serve_argv(plane: str) -> list[str]:
-    return [*_molmcp_command(), "serve", plane]
+def serve_argv(plane: str | None = None, *, disable: tuple[str, ...] = ()) -> list[str]:
+    """Argv for one host spawn.
+
+    ``plane is None`` is the composed stack (``molmcp serve``). Provider
+    disables are forwarded as ``--disable`` so the child process omits those
+    FastMCP mounts. A named *plane* is the single-plane debug server.
+    """
+    parts = [*_molmcp_command(), "serve"]
+    if plane is not None:
+        parts.append(plane)
+        return parts
+    for name in disable:
+        parts.extend(["--disable", name])
+    return parts
 
 
 def render_mcp_json(toggle: PlaneToggle) -> dict[str, Any]:
-    """The standard ``mcpServers`` map, listing only the enabled planes.
+    """One ``mcpServers`` entry: composed ``molmcp serve``.
 
-    Every host molmcp targets reads this shape: Claude Code and Cursor
-    natively, and Grok alongside its own ``config.toml`` (from
-    ``~/.claude.json``, ``.cursor/mcp.json`` and project ``.mcp.json``).
-
-    A disabled plane is simply absent. The TOML renderer this replaces
-    emitted every plane with ``enabled = false``, which only that one
-    format understood.
+    Disabled providers become ``--disable`` flags on that command. Every host
+    molmcp targets reads this JSON shape.
     """
-    cmd = _molmcp_command()
+    cmd = serve_argv(disable=toggle.disabled)
     return {
         "mcpServers": {
-            plane: {"command": cmd[0], "args": cmd[1:] + ["serve", plane]}
-            for plane in toggle.enabled
+            CORE_PLANE_ID: {"command": cmd[0], "args": cmd[1:]},
         }
     }
 
 
-def render_client(
+def render_init(
     host: Host | None = None,
     *,
     enable: list[str] | tuple[str, ...] = (),
@@ -136,42 +193,39 @@ def render_client(
 ) -> tuple[PlaneToggle, str]:
     """Return ``(toggle, config text)``.
 
-    ``host`` selects only where the result is meant to go; the body is the
-    same JSON for all of them.
+    The body is the same JSON for every host, so *host* is validated here and
+    used for nothing else: this function returns text, not a destination.
+    Callers get the path from :func:`~molmcp.host.default_write_path`.
+
+    Args:
+        host: A key of :data:`~molmcp.host.HOSTS`, or ``None`` to render the
+            body without naming a destination.
+        enable: Provider planes to switch back on, applied after *disable*.
+        disable: Provider planes to leave unmounted.
+        available: Plane ids to choose from; defaults to the installed ones.
+
+    Returns:
+        The resolved :class:`PlaneToggle` and the MCP JSON text to write.
+
+    Raises:
+        ValueError: If *host* is not a known host, or a plane toggle is not
+            resolvable.
     """
-    if host is not None and host not in _HOST_PATHS:
-        raise ValueError(
-            f"unknown host {host!r}; known: {', '.join(sorted(_HOST_PATHS))}"
-        )
+    if host is not None and host not in HOSTS:
+        raise ValueError(f"unknown host {host!r}; known: {', '.join(sorted(HOSTS))}")
     toggle = resolve_plane_toggles(enable=enable, disable=disable, available=available)
     return toggle, json.dumps(render_mcp_json(toggle), indent=2) + "\n"
 
 
-#: Where each host expects to find the JSON, relative to home unless noted.
-_HOST_PATHS: dict[str, tuple[str, ...]] = {
-    # Claude Code merges the user file; Cursor and Grok read project files.
-    "claude": (".claude.json",),
-    "cursor": (".cursor", "mcp.json"),
-    # Grok reads project .mcp.json below its own config.toml in priority.
-    "grok": (".mcp.json",),
-}
-
-
-def default_write_path(host: Host) -> Path:
-    """Conventional destination for *host*'s MCP config."""
-    if host not in _HOST_PATHS:
-        raise ValueError(
-            f"unknown host {host!r}; known: {', '.join(sorted(_HOST_PATHS))}"
-        )
-    return Path.home().joinpath(*_HOST_PATHS[host])
-
-
 __all__ = [
+    "HOSTS",
     "Host",
     "PlaneToggle",
+    "SKILL_NAME",
     "default_plane_ids",
     "default_write_path",
-    "render_client",
+    "layout_for",
+    "render_init",
     "render_mcp_json",
     "resolve_plane_toggles",
     "serve_argv",

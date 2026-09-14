@@ -150,6 +150,11 @@ molpack = "molpack_mcp:MolpackProvider"
 
 The key (`molpack` here) is just a label — molmcp doesn't use it. The value is the dotted path to your Provider class.
 
+This entry point is how an *installed* provider is found. A provider shipped
+inside a harness commit is registered the other way — by a `[[component]]` row
+in that commit's catalog, identified by a Git SHA — and never gets an entry
+point or a plane named `harness`; see [Harness catalog](../concepts/harness.md).
+
 ## Step 5 — Test it
 
 ```python
@@ -196,7 +201,7 @@ plane also indexes it — its symbols are reachable through `molcrafts`
 To wire into a client:
 
 ```bash
-molmcp client            # every plane, as standard mcpServers JSON
+molmcp init grok         # managed skills + composed molmcp serve
 claude mcp add molpack -- molmcp serve molpack
 ```
 

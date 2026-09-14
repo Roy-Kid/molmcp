@@ -2,6 +2,136 @@
 
 Evolving architectural decisions. Appended by `/mol:note`; newest first.
 
+<!-- mol:note:topic:spec-premise-verify -->
+## 2026-09-07 — spec 引用别的模块时,必须当场核实再写进 Design
+
+autonomous-harness-evolution 那条 16 员链上,**四条 spec 的 Design 引用了并不存在
+的东西**,全部在实现阶段才炸:
+
+- spec 05:「FastMCP 4 没有 `mcp.lifespan` 属性」——它有;「`_lifespan` 可能为
+  `None`」——永不为 None;「dict 返回值需要 return 注解才有 structured content」
+  ——不需要。
+- spec 07:`resolve_bundle_source` 被定为「唯一解释入口」,却没有任何调用方,
+  `--source /不存在` 会静默降级。
+- spec 08:把 `AppConfig.cache_dir` 当成总有值——它默认 `None`,导致没配
+  `cacheDir` 的用户 harness 开箱即坏。
+- spec 12:`ActivationUnboundError` 仓里根本没有;而且 04 把未绑定状态做成了
+  不可构造(`Activation()` 直接 `TypeError("use Activation.bind")`)。
+- spec 13:`from molmcp.evaluate import evaluate`,签名 `Path -> bool`——真实符号
+  在 `molmcp.evolution.evaluate`,签名是 8 参数返回 `EvaluationReport`。
+
+共同点:这些 spec 是**一次性批量起草**的,谁都没去跑一下。
+
+**Rule**: spec 起草时凡引用另一个模块的类型名、字段、异常或签名,先
+`uv run python -c "import ...; print(inspect.signature(...))"` 核一遍,再写进
+Design。跨 spec 链尤其如此——后一条引用前一条**交付的**符号,不是前一条 spec
+里**写的**符号。
+
+<!-- mol:note:topic:golden-not-self-proving -->
+## 2026-09-07 — golden 必须是独立字面量,且必须真跑反例
+
+本链两个回归带着**恒真断言**落库,同一个模式:一个常量既喂给被测函数当输入、
+又当断言的期望值,改它两边一起动,断言永远通不掉。两次都是**执行反例控制**
+时才暴露,code review 看不出来。
+
+**Rule**: 测试与示例里的 golden 与构造输入的字面量**分开各写各的**;每个 golden
+至少跑一次「改坏 → 必须失败 → 还原」。控制项自己也要验:如果一个控制"通过"了,
+那说明该 golden 是空的,先修 golden 再说。
+
+<!-- mol:note:topic:facade-symbol-collision -->
+## 2026-09-07 — 往包门面加符号之前,先 grep 现有 `__all__`
+
+同一批 spec 里撞了三次:
+
+- spec 10 与 spec 11 都要从 `molmcp.evolution` 导出名为 `Candidate` 的东西——
+  一个是「被提议的补丁」,一个是「待评估的检出」。改名 `Challenger` 才解开。
+- spec 07 声明 `HOSTS: dict[Host, HostLayout]` 于 `host/layout.py`,spec 15 声明
+  `HOSTS: tuple[Host, ...]` 于 `host/install.py`。
+- spec 09 与 spec 10 对**同一个包**指定了不同的测试目录(10 还显式排除了 09 选的)。
+
+**Rule**: 起 spec 时若要往某个包的 `__all__` 加符号,先读那个 `__all__`,再读
+同链其它 spec 的 Files 段。撞名不是实现细节,是两个概念抢一个词,必须在 spec
+阶段解决。
+
+<!-- mol:note:topic:test-dir-prefix -->
+## 2026-09-07 — 测试目录用 `test_` 前缀镜像 `src/`
+
+仓里两种约定都有先例(`tests/discovery/` `tests/collection/` 无前缀;
+`tests/test_components/` `tests/test_provider/` 有前缀),于是 spec 09 与 10 各
+选一种、互相矛盾。已统一。
+
+**Rule**: `src/foo/bar.py` 的单测放 `tests/test_foo/test_bar.py`。一个源码包的
+测试只放一个目录,不得分散。
+
+<!-- mol:note:topic:isolation-check-imports -->
+## 2026-09-07 — 「不得依赖 X」用 AST 查 import,不要全文 grep 子串
+
+`test_wiki.py` 曾禁止 `wiki.py` 全文出现小写 `github`,结果实现被迫写成
+`_FORGE_SCHEME = "git" + "hub:"` ——而那段代码的作用恰恰是**拒绝** forge URL,
+是隔离的证据而不是违反。测试自己也得靠 `"create_" + "stack"` 躲开自己的扫描。
+钝 grep 同时过宽(命中 docstring 与拒绝逻辑)又过窄(躲不过字符串拼接)。
+
+**Rule**: 依赖隔离断言走 AST——遍历 `Import` / `ImportFrom`,把相对 import 解析
+成绝对点分路径再比。只有 `importlib.import_module("...")` 这种 AST 看不见的
+动态导入才补一条针对**点分模块路径**的文本检查。
+
+<!-- mol:note:topic:fastmcp4-lifespan -->
+## 2026-09-07 — FastMCP 4.0.0b5 lifespan 事实（推翻 spec 05 的三条前提）
+
+Spec 05 的 Design 写了三条关于 FastMCP 4 的断言，实测**全错**。它们已在
+`provider_worker/` 的 docstring 里改正，但 06–16 的 spec 正文可能仍带着旧
+说法——照抄前先核对源码。
+
+1. **`mcp.lifespan` 存在**，是继承来的 `AggregateProvider.lifespan`
+   (`fastmcp/server/providers/aggregate.py:345`)：无参 `@asynccontextmanager`，
+   聚合的是**被 mount 的 provider** 的 lifespan。它与构造函数 `lifespan=`
+   存进 `_lifespan` 的那个 callable 是**两个不同对象、不同签名**。
+   设计上刻意不用它——但不能说它「不存在」。
+2. **`FastMCP._lifespan` 永不为 `None`**：`__init__` 在未传 `lifespan=` 时
+   回落到 `default_lifespan`（`server/server.py:404-408`）。任何
+   `if previous is None` 分支都是防御性死代码，写注释说明，别当正常路径。
+3. **dict 返回值无需 return 注解**即可产出 structured content
+   （实测 `ToolResult.structured_content == {"text": "ping"}` 两种情形一致）。
+   所以 worker 线协议**不带** return 字段——别为它加。
+
+**Rule**: 引用 FastMCP 私有属性前，先读
+`.venv/.../fastmcp/server/` 的对应源码核实；`_lifespan_manager`
+(`server/mixins/lifespan.py:169`) 做的是
+`enter_async_context(self._lifespan(self))` 并把 yield 值缓存成
+`_lifespan_result`——**任何包装 `_lifespan` 的代码必须把前一个 lifespan 的
+yield 值透传出去**，吞掉它就等于悄悄拿走了服务器的应用状态。
+
+<!-- mol:note:topic:worker-child-isolation -->
+## 2026-09-07 — worker 子进程的 FastMCP 隔离边界在 provider.py
+
+`provider_sdk.py` 早就把 `FastMCP` 放在 `TYPE_CHECKING` 下，但它
+`from .provider import Provider`，而 `provider.py` 当时是**模块级**
+`from fastmcp import FastMCP`——于是 `import molmcp.provider_sdk` 照样把整个
+FastMCP 栈拖进任何进程。spec 05 的 child 必须 import `ProviderBase`，
+AC-002（子进程无 fastmcp）因此不可能成立。已把那一行移到 `TYPE_CHECKING`
+下（行为不变：该文件有 `from __future__ import annotations`，`FastMCP` 只出现在
+docstring 与被字符串化的 `register` 注解里）。
+
+**Rule**: `molmcp.provider_sdk` 及其依赖链（`provider.py`）是**子进程可安全
+import 的边界**——不得在这条链上新增模块级 FastMCP / `molmcp.server` import。
+`molmcp/__init__.py` 与 `provider_worker/__init__.py` 是 PEP 562 惰性门面，
+`__getattr__` **必须**对未知名抛 `AttributeError`：CPython 的
+`_handle_fromlist` 靠它回落到子模块导入，`from molmcp import cli/settings/
+runtime/client_config` 等十余处调用点依赖这一点。
+
+<!-- mol:note:topic:ruff-first-party-cache -->
+## 2026-09-07 — ruff 的 first-party 判定随文件存在与否翻转
+
+ruff 的 isort 按**目标模块文件是否存在于 `src/` 下**判 first-party。于是
+RED 阶段写的 import 块（模块尚不存在 → 判 third-party）会在 GREEN 之后变成
+I001。更糟的是 `.ruff_cache` 会掩盖它：751e874 就这样带着
+`tests/test_components/test_models.py` 的 I001 落库，本地暖缓存全绿而**干净
+检出必然挂 CI lint**（已修，见 fb4c348）。
+
+**Rule**: 提交前用 `rm -rf .ruff_cache && uv run ruff check src tests` 复核
+——CI 与新克隆跑的都是冷缓存。TDD 写测试时，先造出目标模块的空壳或事后
+`ruff check --fix`，别相信 RED 阶段的 lint 结果。
+
 ## 2026-08-02 — molvis provider = 工作台原语,不是接口翻译层
 
 molmcp 对 molvis 的角色定位:**把「活着的 Python 会话」借给 agent,而不是替
@@ -93,3 +223,122 @@ Same placement rule as `providers/molexp/`. Contract:
   突变测试）中允许；裸 `# type: ignore` 不允许。**
 - **MCP payload 契约测试钉序列化字面量**（如 `"resolved"`），不引用枚举成员——
   测的是 wire format。
+
+<!-- mol:note:topic:faked-seam-hides-broken-reader -->
+## [2026-09-08] 缝把函数假掉时，至少要一条测试驱动真函数
+
+`harness-evo-01-sources` 期间，`Settings.harness` 从 dict 改成 tuple 后
+`server._harness_locator()` 对**每一个**安装都抛 `AttributeError`，`molmcp serve`
+已断——而全量套件 1852 条全绿。原因：`tests/test_stack.py` 通过 `_wire` 缝注入
+一个假的 locator，`grep -rn "_harness_locator" tests/` 唯一的命中是一个**测试
+名字**，没有任何测试调用过真函数。缝越好用，越没人调用真货。
+
+**Rule**：为某个函数造了测试缝之后，必须同时留至少一条不走缝、直接调用真函数的
+测试。缝证明的是调用方编排正确，不是被缝掉的那个函数还能跑。
+
+<!-- mol:note:topic:schema-type-flip-unlocks-writes -->
+## [2026-09-08] 翻转 `_SCHEMA` 类型会静默解锁旧类型正在拒绝的写路径
+
+`settings._SCHEMA["harness"]` 从 `dict` 改成 `list` 的瞬间，两条 CLI 写路径失去
+保护：`_parse` 的 `expected is dict` 分支（抛 "set a member instead"）不再命中，
+改走 `expected is list` 返回 `[value]`；`add_value` 的 `_SCHEMA.get(top) is not
+list` 守卫不再触发，直接 append 裸字符串。两者都在 `write_settings_file` 之前
+**无任何校验**。而 `_reject_unknown` 位于 `load_settings` 之下，于是下一条命令起
+`config list/get/set/add/remove` 与 `serve` 全部 exit 2，**没有任何 CLI 能救回**，
+只能手改 JSON。
+
+**Rule**：改 `_SCHEMA` 里某个键的类型时，先列出 `_parse` / `set_value` /
+`add_value` / `remove_value` / `_resolve` 中按**旧类型**分支的每一处，逐条确认新
+类型下谁还在拒绝、谁开始放行。类型不只是校验规则，它同时是这些动词的调度键。
+配套：元素是对象的 list 用 `_OBJECT_LISTS` 声明，两个字符串动词读表拒绝，
+不在函数体里写死键名。
+
+<!-- mol:note:topic:harness-layers-replace-not-union -->
+## [2026-09-09] harness 列表跨层是「整份替换」，并集已放弃
+
+链 01 把「跨层取并集」记为欠链 03 的债，但链 01 同时发布了钉住相反行为的东西：
+`tests/test_settings.py` 的 `test_harness_is_a_list_setting_with_no_merge_channel`
+与 `test_the_most_specific_layer_replaces_the_list_rather_than_merging`、
+`settings.py` 里 `harness` 不属于任何合并通道、以及 `docs/concepts/harness.md`
+的相应段落——最后一条还是构建强制的（`test_harness_catalog_fixture.py` 会解析
+该页 JSON 并逐条构造真的 `HarnessSource`）。
+
+链 03 的决定：**并集放弃，不是再往后推**。最具体的层整份胜出是自洽规则，没有任何
+东西需要打破它；而 `harness` 不入任何合并通道，正是这条规则不用写代码就成立的原因
+（`load_settings` 的默认分支「最后一次赋值胜出」+ `settings_layers` 低优先级在前）。
+
+注意与 `_MERGED_LISTS` 成员方向相反：`excludes` / `knowledgeScope` 等用 `extend`
+低→高累积，所以**用户文件**的条目活下来；`harness` 是**local 文件**的列表整份取代
+用户文件的。两个 list 设置相隔十几行、方向相反，`ac-006` 在同一个测试里同时断言两者
+就是为了让这件事写在测试里而不是留给人在安装时踩。
+
+**Rule**：想让 harness 跨层合并之前，先改上面那两条测试和那页构建强制的文档；
+它们是这个决定的落点，不是随手可绕的断言。
+
+<!-- mol:note:topic:store-not-git-backed -->
+## [2026-09-09] harness store 刻意不用 git 支撑，理由和触发阈值
+
+问过一次：harness 仓本来就是 clone 下来的，`ImmutableGitStore` 为什么还要把每个
+commit 解压成一份完整的树？实测过开销：demo 仓每个 commit 644K，真实 harness 仓
+`.git` 12M / 工作区 13M，所以激活 N 个版本约等于 N 份工作区，而 git 用共享对象只需
+一份历史。空间上 git 明显更省，`git worktree` 还能让多个 commit 同时物化（盲测 A/B
+正需要两棵树并存），回滚也能到任意 commit 而不只是 `previous`。
+
+**仍然不做，三个代价换不回来：**
+
+1. **不可变性会丢。** 现在的树解压一次后永不改动——这是 `ImmutableGitStore` 里
+   "Immutable" 的实质，服务中的 harness 不能被就地篡改。worktree 是活的检出。
+2. **远程路径会多一个 git 依赖。** 今天远程是纯 HTTP + tarfile，没有 git 二进制也能
+   跑；改成 clone 就必须有，且要处理 `--depth` / partial clone。
+3. **落盘契约要变。** `<cache>/harness/commits/<sha>/tree` 与 `metadata.json` 的
+   provenance + `ShaConflictError` 是 CLAUDE.md 列为「不可随意变更」的那类，需要
+   bump、旧目录处理、迁移路径。
+
+还有一个不显然的坑：直接在用户的工作检出里 `git worktree add`，会把 molmcp 的
+worktree 写进**用户仓库**的 `.git/worktrees`。干净做法是 molmcp 在缓存里维护自己的
+裸镜像（本地源可 `git clone --local` 硬链对象），再从镜像开 worktree——但那是又一个
+要维护的东西。
+
+**Rule**：在有人真的激活到几十个版本、或者 `molmcp cache` 清理不足以应付之前，不要
+重开这个话题。真要做，先写 spec：上面第 1 条是真会丢的性质，必须先说清用什么补
+（worktree 建完 `chmod -R a-w`？还是接受可改并说明为什么可以），而不是默认它无所谓。
+
+<!-- mol:note:topic:evaluator-splits-harness-from-project -->
+## [2026-09-10] 盲测评估器：机制随 harness 走，用例归项目
+
+`/mol:evo`（skill）+ `harness-actor` + `harness-observer` 是 **harness 组件**，作为
+`evo` bundle 随 harness 安装；`scripts/harness_cases.py` 与 `scripts/harness_eval.py`
+留在 molmcp。
+
+分界线是 `harness_cases.py` 自己写下的那句：「Every case tests a rule `CLAUDE.md`
+already states」。用例编码的是**某个仓库**的规则——molmcp 的用例拿到 molpy 上就是
+胡话。而盲测协议（manifest 先写、actor 只读且不见判据、observer 只见标签、只有
+Python 门能判胜负）在哪个仓库都一样。
+
+所以 skill 不许硬编码 molmcp 的路径：它声明自己需要什么（带 `id` / `graduated` /
+`task` / `expect` / `forbid` 的用例集，加一个把 manifest + observation 变成裁决的
+命令），把 molmcp 那两个文件只当**示例**写。项目两样都没有 → 停下来说清楚。
+
+**Rule**：往 evaluator 里加东西前先问它是协议还是判据。协议进 harness 仓，判据留
+项目仓。skill 里出现第二个写死的 molmcp 路径，就是这条被违反了。自己编用例来填空
+等于什么都没测量。
+
+**另见**：冠军/挑战者不是「两个激活的 commit」——激活指针每源只有一个 `active`。
+成对的是 `previous`（冠军）与 `active`（挑战者），靠 store 的发布不可变且只增，
+两棵树才能并存被读。`worse_tokens` / `worse_latency` 这条路走不到：两侧都钉死为 0。
+
+<!-- mol:note:topic:harness-agents-await-their-new-owner -->
+## [2026-09-10] `.claude/agents/harness-*.md` 是临时副本,等 PR 落地后删
+
+`harness-actor` / `harness-observer` 的正主已经是
+`Roy-Kid/molcrafts-harness`(PR #1,`plugins/mol/agents/`)。molmcp 树里这两份是
+同内容副本,只为在 PR 合并前不分叉。
+
+**Rule**:PR #1 合并后,删掉 molmcp 的 `.claude/agents/harness-actor.md` 与
+`harness-observer.md`,把 `tests/test_harness_agents.py:26-29` 从 `REPO/.claude/agents`
+改成读已安装位置(或改成对 harness 仓的契约测试)。在那之前改这两个文件,
+**两边都要改**——只改一边就是本条被违反。
+
+`scripts/harness_cases.py` / `scripts/harness_eval.py` / `src/molmcp/evolution/`
+不搬:那是判据和裁决门,归项目。见
+[[evaluator-splits-harness-from-project]]。

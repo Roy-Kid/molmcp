@@ -5,12 +5,15 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 import re
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from fastmcp import FastMCP
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
 
 PROVIDER_ENTRY_POINT_GROUP = "molmcp.providers"
 PROVIDER_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
+# ``catalog`` is retired as a plane; keep the name reserved so no provider
+# can occupy the old server id.
 RESERVED_PROVIDER_NAMES = frozenset({"molcrafts", "catalog"})
 
 logger = logging.getLogger(__name__)
@@ -22,12 +25,12 @@ class Provider(Protocol):
 
     Implementations must expose:
 
-    * ``name`` — plane id and MCP server name (e.g. ``"molvis"``). Clients
-      connect with ``molmcp serve <name>``; tool ids become
-      ``<name>__<tool>`` at the client (e.g. ``molvis__open``).
-    * ``register(mcp)`` — attach **bare** tool names only (``open``, not
-      ``molvis_open``). Never mount with a namespace. Startup rejects
-      ``{plane}_…`` and ``{plane}_{plane}_…`` (legacy ``molexp_molexp_*``).
+    * ``name`` — plane id (e.g. ``"molvis"``). On the composed core, FastMCP
+      namespaces tools as ``molvis_open``. A debug ``molmcp serve molvis``
+      process still uses bare ``open`` (client ``molvis__open``).
+    * ``register(mcp)`` — attach **bare** tool names only (``open``). The
+      parent ``create_stack`` adds the namespace. A focused process named
+      ``molvis`` still rejects registering ``molvis_open`` (would double).
 
     Optional:
 

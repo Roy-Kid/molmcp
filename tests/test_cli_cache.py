@@ -11,18 +11,8 @@ import json
 import sqlite3
 import time
 
-import pytest
-
 from molmcp import cli
 from molmcp import settings as st
-
-
-@pytest.fixture
-def home(tmp_path, monkeypatch):
-    fake = tmp_path / "home"
-    fake.mkdir()
-    monkeypatch.setattr(st.Path, "home", staticmethod(lambda: fake))
-    return fake
 
 
 def _config(tmp_path, cache_dir) -> None:

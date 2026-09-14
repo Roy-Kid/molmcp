@@ -12,6 +12,7 @@ import json
 import pytest
 
 from molmcp import CollectionIndex, SourceBinding, create_plane
+from molmcp import settings as st
 from molmcp.discovery import DiscoveryConfig
 from molmcp.discovery.engine import DiscoveryEngine
 
@@ -36,6 +37,15 @@ def server(tmp_path):
         collection=collection,
         discover_entry_points=False,
     )
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """A ``tmp_path``-rooted ``Path.home``, so no developer's ``~`` is read."""
+    fake = tmp_path / "home"
+    fake.mkdir()
+    monkeypatch.setattr(st.Path, "home", staticmethod(lambda: fake))
+    return fake
 
 
 async def call(server, tool: str, args: dict | None = None):

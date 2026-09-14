@@ -1,33 +1,40 @@
 """GitHub source resolution.
 
-Resolves a ``github:owner/repo[@ref]`` spec to an immutable snapshot by
-resolving the ref to a commit SHA (the snapshot id) and downloading that
-commit's tarball. All network access is stdlib ``urllib`` and is
-confined to this module, so a restricted-network deployment can disable
-GitHub and keep local discovery fully working.
+Turn a ``github:owner/repo[@ref]`` spec into an immutable snapshot.
+A *ref* is a branch name, tag, or SHA (Secure Hash Algorithm hex
+digest, the git commit id). The snapshot id is ``github:commit:<sha>``,
+not the SHA alone.
+
+Network access is a :class:`~molmcp.components.git.GitTransport`
+(default :class:`~molmcp.components.git.GitHubTransport`), built only
+by :func:`_transport` from ``config.github_token`` (optional GitHub
+personal access token, PAT). This module parses the spec, extracts the
+*inner tree* (the single top-level directory inside the commit tarball)
+into ``SnapshotCache.raw_dir`` (``<cache_dir>/snapshots/<slug>/raw/``),
+records that path in a ``.extracted`` marker, and maps
+:class:`~molmcp.components.git.GitError` to :class:`SourceError`.
 """
 
 from __future__ import annotations
 
-import io
-import json
 import shutil
-import tarfile
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+from molmcp.components.git import (
+    GitError,
+    GitHubTransport,
+    GitTransport,
+    extract_git_archive,
+)
 
 from ..config import DiscoveryConfig
 from .resolver import Snapshot, SnapshotId, SourceError
 from .walk import walk_files
 
-_API = "https://api.github.com"
-_CODELOAD = "https://codeload.github.com"
-_TIMEOUT = 30
-
 
 def _parse_github_spec(spec: str) -> tuple[str, str, str | None]:
+    """Parse ``github:owner/repo[@ref]`` into ``(owner, repo, ref)``."""
     body = spec[len("github:") :] if spec.startswith("github:") else spec
     ref: str | None = None
     if "@" in body:
@@ -40,68 +47,50 @@ def _parse_github_spec(spec: str) -> tuple[str, str, str | None]:
     return parts[0], parts[1], (ref or None)
 
 
-def _http_get(
-    url: str,
-    token: str | None = None,
-    accept: str = "application/vnd.github+json",
-) -> bytes:
-    headers = {"User-Agent": "molmcp-discovery", "Accept": accept}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
-            return response.read()
-    except urllib.error.HTTPError as exc:
-        raise SourceError(f"GitHub request failed ({exc.code}) for {url}") from exc
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise SourceError(f"GitHub request failed for {url}: {exc}") from exc
-
-
-def resolve_ref(owner: str, repo: str, ref: str | None, config: DiscoveryConfig) -> str:
-    """Resolve a branch/tag/ref (or the default branch) to a commit SHA."""
-    token = config.github_token
-    if ref is None:
-        info = json.loads(_http_get(f"{_API}/repos/{owner}/{repo}", token))
-        ref = info.get("default_branch", "HEAD")
-    payload = json.loads(_http_get(f"{_API}/repos/{owner}/{repo}/commits/{ref}", token))
-    sha = payload.get("sha")
-    if not sha:
-        raise SourceError(f"could not resolve {owner}/{repo}@{ref}")
-    return sha
+def _transport(config: DiscoveryConfig) -> GitTransport:
+    """Build the :class:`GitTransport` for this config (PAT from ``github_token``)."""
+    return GitHubTransport(token=config.github_token)
 
 
 def latest_commit(spec: str, config: DiscoveryConfig) -> str:
-    """Return the current commit SHA a github spec points at."""
+    """Return the current commit SHA a ``github:`` spec points at.
+
+    A SHA (Secure Hash Algorithm) here is the hex digest GitHub uses as a
+    commit id. This call only resolves the ref; it does not download the
+    archive. Network access goes through :func:`_transport`.
+
+    Args:
+        spec: ``github:owner/repo[@ref]``. A *ref* is a branch name, tag, or
+            SHA; omitted means the repository default branch.
+        config: Discovery settings. ``github_token`` is the optional GitHub
+            personal access token (PAT) handed to the transport.
+
+    Returns:
+        Commit SHA as a hex digest.
+
+    Raises:
+        SourceError: Invalid spec, or a :class:`~molmcp.components.git.GitError`
+            from the transport (mapped with ``raise SourceError(str(exc))
+            from exc``).
+    """
     owner, repo, ref = _parse_github_spec(spec)
-    return resolve_ref(owner, repo, ref, config)
-
-
-def _safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
+    transport = _transport(config)
     try:
-        tar.extractall(dest, filter="data")  # py3.12+: blocks traversal
-    except TypeError:  # pragma: no cover - older Python
-        tar.extractall(dest)
-
-
-def _download_source(
-    owner: str, repo: str, sha: str, raw_dir: Path, config: DiscoveryConfig
-) -> Path:
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    url = f"{_CODELOAD}/{owner}/{repo}/tar.gz/{sha}"
-    data = _http_get(url, config.github_token, accept="application/octet-stream")
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
-        _safe_extract(tar, raw_dir)
-    subdirs = sorted(d for d in raw_dir.iterdir() if d.is_dir())
-    if not subdirs:
-        raise SourceError("GitHub tarball contained no source directory")
-    return subdirs[0]
+        return transport.resolve_commit(owner, repo, ref)
+    except GitError as exc:
+        raise SourceError(str(exc)) from exc
 
 
 def _ensure_source(
-    owner: str, repo: str, sha: str, raw_dir: Path, config: DiscoveryConfig
+    owner: str, repo: str, sha: str, raw_dir: Path, transport: GitTransport
 ) -> Path:
-    """Return the extracted source root, downloading it once if needed."""
+    """Return the inner-tree root, fetching the archive only when needed.
+
+    ``raw_dir / ".extracted"`` is a marker file holding the inner-tree
+    absolute path. If that file exists and the path is a directory, return
+    it. Otherwise delete ``raw_dir``, download via ``transport.fetch_archive``,
+    extract with :func:`extract_git_archive`, and rewrite the marker.
+    """
     marker = raw_dir / ".extracted"
     if marker.is_file():
         root = Path(marker.read_text(encoding="utf-8").strip())
@@ -109,20 +98,52 @@ def _ensure_source(
             return root
     if raw_dir.exists():
         shutil.rmtree(raw_dir, ignore_errors=True)
-    root = _download_source(owner, repo, sha, raw_dir, config)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    data = transport.fetch_archive(owner, repo, sha)
+    root = extract_git_archive(data, raw_dir)
     marker.write_text(str(root), encoding="utf-8")
     return root
 
 
 def resolve_github(spec: str, config: DiscoveryConfig) -> Snapshot:
-    """Resolve a ``github:owner/repo[@ref]`` spec to a snapshot."""
+    """Resolve a ``github:owner/repo[@ref]`` spec to an immutable snapshot.
+
+    Resolves the ref to a commit SHA via :func:`_transport`, then places
+    that commit's files under ``SnapshotCache.raw_dir`` — the per-snapshot
+    directory ``<cache_dir>/snapshots/<slug>/raw/``. GitHub tarballs wrap
+    the repo in one top-level folder (for example ``owner-repo-sha/``);
+    that folder is the *inner tree* and becomes ``Snapshot.root_dir``, not
+    ``raw/`` itself. A ``.extracted`` marker file inside ``raw/`` stores
+    the inner-tree absolute path so a later call can skip the download.
+
+    Args:
+        spec: ``github:owner/repo[@ref]``. A *ref* is a branch name, tag, or
+            SHA; omitted means the repository default branch.
+        config: Discovery settings, including ``cache_dir`` and optional
+            ``github_token`` (GitHub PAT).
+
+    Returns:
+        Snapshot whose ``snapshot_id`` is ``github:commit:<sha>``,
+        ``commit`` is that SHA, and ``root_dir`` is the inner tree.
+
+    Raises:
+        SourceError: Invalid spec, or a :class:`~molmcp.components.git.GitError`
+            from resolve/fetch/extract (mapped with ``from exc``).
+    """
     from ..cache.snapshotcache import SnapshotCache
 
     owner, repo, ref = _parse_github_spec(spec)
-    sha = resolve_ref(owner, repo, ref, config)
+    transport = _transport(config)
+    try:
+        sha = transport.resolve_commit(owner, repo, ref)
+    except GitError as exc:
+        raise SourceError(str(exc)) from exc
     snapshot_id = SnapshotId("github", "commit", sha)
     raw_dir = SnapshotCache(config).raw_dir(str(snapshot_id))
-    root = _ensure_source(owner, repo, sha, raw_dir, config)
+    try:
+        root = _ensure_source(owner, repo, sha, raw_dir, transport)
+    except GitError as exc:
+        raise SourceError(str(exc)) from exc
     files = tuple(walk_files(root, config))
     return Snapshot(
         snapshot_id=str(snapshot_id),

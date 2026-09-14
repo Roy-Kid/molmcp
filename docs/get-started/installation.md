@@ -13,25 +13,33 @@ pip install molcrafts-molmcp
 
 ```bash
 uv add --prerelease=allow molcrafts-molmcp
+# or, into the active environment:
+uv pip install --prerelease=allow --upgrade molcrafts-molmcp
 ```
 
-!!! note "Why the flag"
+Check the binary you actually got:
 
-    molmcp requires **FastMCP 4** for MCP 2026-07-28, and FastMCP 4 is still
-    in beta — PyPI's 4.x line is `4.0.0b2` with no final release yet. pip
-    installs it without ceremony, but uv does not enable pre-releases for a
-    dependency of a dependency, so it reports:
+```bash
+which molmcp
+molmcp --version
+```
+
+!!! warning "Without `--prerelease=allow`, uv will not install 0.6+"
+
+    molmcp requires **FastMCP 4** (MCP 2026-07-28). FastMCP 4 is still beta
+    (`4.0.0b5`). `pip install -U molcrafts-molmcp` is fine; uv is not:
 
     ```
-    Because only fastmcp<4.0.0b1 is available and molcrafts-molmcp
-    depends on fastmcp>=4.0.0b1 ... cannot be used.
+    Because only fastmcp<4.0.0b5 is available and molcrafts-molmcp
+    depends on fastmcp>=4.0.0b5 ... cannot be used.
     ```
 
-    Pinning an exact `==4.0.0b2` does not help — uv refuses that for the same
-    reason. FastMCP 3.x is not an alternative: it speaks the older protocol,
-    and molmcp's planes are built on the new one.
+    Bare `uv pip install --upgrade molcrafts-molmcp` can also **downgrade**
+    to 0.2.1 (the last release whose dependencies are all stable). Always
+    pass `--prerelease=allow` until FastMCP 4.0.0 final ships.
 
-    The flag stops being necessary the day FastMCP 4.0.0 ships.
+    `--version` exists from **0.6.1**. An older CLI prints
+    `the following arguments are required: command` instead.
 
 ## What gets installed
 
@@ -115,11 +123,28 @@ molmcp config set sources.atomiverse pkg:atomiverse
 | `maxCacheAgeDays` | Retention window for extraction payloads (default 30) |
 | `pythonEnv` | Environment to discover from: a venv root, a python, or a site-packages dir |
 | `discoverInclude` / `discoverExclude` | Force a distribution in or out of auto-discovery |
+| `harness` | Ordered list of named harness sources, each an object `{name, owner, repo, ref}` |
 | `molexp.workspace` | Default molexp workspace path |
 | `molq.database` | Override the molq job database |
 
 Unknown keys are rejected. A mistyped `indexWorkspaces` that quietly does
 nothing is worse than one that says so.
+
+`harness` is the one key in that table whose elements are objects, so the
+string-valued write verbs cannot author it and it has two subcommands of its own:
+`molmcp config harness set MolCrafts/harness [--alias NAME] [--enable BUNDLE] [--disable BUNDLE]`
+upserts one entry, `molmcp config harness remove --name NAME` drops one, and both
+take the same `--project` / `--local` scope flags as the verbs above. What the
+list is for, what an entry means, what a half-written one does at serve time,
+and a worked snippet of the file live on
+[Harness catalog](../concepts/harness.md); molmcp ships no default source, so an
+install that names none simply has no harness.
+
+Because rejection happens on every *read*, and every `config` verb reads the
+file before it writes it, a typo anywhere in the file stops all of
+`config list`, `get`, `set`, `add`, `remove` and `harness` — and `molmcp serve`
+too — with exit status 2, the message naming the file and the offending key.
+The fix is to edit that same file; no verb can do it for you.
 
 ### `molcrafts.json`
 
@@ -129,6 +154,7 @@ was.
 
 ## Next steps
 
-- **[Quickstart](quickstart.md)** — serve catalog + molcrafts and wire a client
-- **[Architecture](../concepts/architecture.md)** — one plane per connection
-- **[Deploy](deploy.md)** — multi-link stdio layout for Claude Code
+- **[Quickstart](quickstart.md)** — `molmcp serve` and `molmcp init`
+- **[Architecture](../concepts/architecture.md)** — FastMCP composition
+- **[Harness catalog](../concepts/harness.md)** — the ordered `harness` source list, how to write one into your settings file, and why a harness is a Git SHA rather than a plane
+- **[Deploy](deploy.md)** — local stdio for Claude Code

@@ -1,4 +1,4 @@
-"""Plane-oriented MolMCP CLI — one MCP process per product plane."""
+"""MolMCP CLI — molcrafts core plus one process per provider plane."""
 
 from __future__ import annotations
 
@@ -10,35 +10,68 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import settings
-from .client_config import render_client
+from . import __version__, settings
+from .client_config import render_init
+from .components import GitError
 from .config import AppConfig, ConfigurationError, load_config
-from .planes import known_plane_ids, list_plane_infos, route_task
-from .runtime import build_collection
-from .server import create_plane
+from .gate import run_gate
+from .harness_install import install_harness_components
+from .harness_sync import relocate_pointer, rollback_source, sync_source
+from .host import (
+    HOSTS,
+    default_write_path,
+    install_extra_skills,
+    install_skill,
+    write_adapter,
+)
+from .planes import (
+    CORE_PLANE_ID,
+    GONE_PLANE_IDS,
+    gone_plane_message,
+    known_plane_ids,
+    list_plane_infos,
+    route_task,
+)
+from .runtime import build_collection, resolved_cache_dir
+from .server import create_plane, create_stack
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="molmcp",
         description=(
-            "MolCrafts multi-plane MCP: one product domain per connection. "
-            "Default: enable all planes in the client; use --disable / --enable."
+            "MolCrafts MCP: `serve` runs the composed core; "
+            "`init <host>` wires the host and installs managed skills."
         ),
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
     serve = commands.add_parser(
         "serve",
-        help="Start one MCP plane (required plane id).",
+        help="Start the composed molcrafts stack (default) or one plane.",
     )
     _config_argument(serve)
     serve.add_argument(
         "plane",
+        nargs="?",
+        default=None,
         help=(
-            "Plane to serve: catalog | molcrafts | <provider> "
-            "(run `molmcp planes` for the list)."
+            "Omit to mount enabled providers onto molcrafts (FastMCP namespace). "
+            "Pass molcrafts or a provider name for a single-plane debug server."
         ),
+    )
+    serve.add_argument(
+        "--disable",
+        action="append",
+        default=[],
+        metavar="PLANE",
+        help="Omit a provider mount (written by `molmcp init --disable`).",
     )
     serve.add_argument(
         "--transport",
@@ -56,7 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     planes = commands.add_parser(
         "planes",
-        help="List connectable MCP planes (on-demand multi-link catalog).",
+        help="List the molcrafts core and optional provider planes.",
     )
     planes.add_argument(
         "--json",
@@ -70,44 +103,40 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     route.add_argument("task", help="User task description.")
 
-    client = commands.add_parser(
-        "client",
+    init = commands.add_parser(
+        "init",
         help=(
-            "Emit host MCP config. Default: all planes enabled; "
-            "use --disable / --enable to toggle."
+            "Install managed skills (molcrafts, molexp-plan) and MCP "
+            "config for one host. molcrafts cannot be disabled."
         ),
     )
-    client.add_argument(
+    init.add_argument(
         "host",
-        nargs="?",
-        default=None,
-        choices=["grok", "claude", "cursor"],
-        help=(
-            "Where the config is headed. The body is the same standard "
-            "mcpServers JSON for every host; this only picks the default "
-            "output path."
-        ),
+        # The host list has one home: repeating it here would be a second
+        # table to keep in step with `molmcp.host.layout.HOSTS`.
+        choices=tuple(HOSTS),
+        help="Host to wire (user-level skills + MCP JSON).",
     )
-    client.add_argument(
+    init.add_argument(
         "--enable",
         action="append",
         default=[],
         metavar="PLANE",
-        help="Enable a plane (after --disable). Repeatable.",
+        help="Enable a provider mount (after --disable). Repeatable.",
     )
-    client.add_argument(
+    init.add_argument(
         "--disable",
         action="append",
         default=[],
         metavar="PLANE",
-        help="Disable a plane. Repeatable. Default is all enabled.",
+        help="Omit a provider mount. Repeatable.",
     )
-    client.add_argument(
+    init.add_argument(
         "-o",
         "--output",
         type=Path,
         default=None,
-        help="Write to this path (default: print to stdout).",
+        help="MCP JSON path (default: that host's user config).",
     )
 
     info = commands.add_parser("info", help="Show registry and index coverage.")
@@ -158,6 +187,92 @@ def _build_parser() -> argparse.ArgumentParser:
     _scope_arguments(config_remove)
     config_remove.add_argument("key")
     config_remove.add_argument("value", nargs="?", default=None)
+    config_harness = config_actions.add_parser(
+        "harness",
+        help="Author the named harness sources this install fetches from.",
+    )
+    harness_actions = config_harness.add_subparsers(
+        dest="harness_action", required=True
+    )
+    harness_set = harness_actions.add_parser(
+        "set",
+        help="Upsert one harness source, addressed by a locator.",
+    )
+    _scope_arguments(harness_set)
+    harness_set.add_argument(
+        "locator",
+        help=(
+            "Origin as you write it: owner/repo, a GitHub URL, or a ~/ "
+            "or absolute checkout. The same origin upserts the same entry."
+        ),
+    )
+    harness_set.add_argument(
+        "--alias",
+        default=None,
+        help="Name this source; omit to default to origin on insert.",
+    )
+    harness_set.add_argument(
+        "--enable",
+        action="append",
+        default=[],
+        metavar="TOKEN",
+        help="Bundle to enable. Repeatable. 'all' means every bundle.",
+    )
+    harness_set.add_argument(
+        "--disable",
+        action="append",
+        default=[],
+        metavar="TOKEN",
+        help="Bundle to disable. Repeatable. 'all' leaves the source with none.",
+    )
+    harness_remove = harness_actions.add_parser(
+        "remove",
+        help="Drop the harness source matching an alias or locator.",
+    )
+    _scope_arguments(harness_remove)
+    harness_remove.add_argument(
+        "name",
+        help="The entry's alias, or any accepted locator spelling of its origin.",
+    )
+
+    # A second top-level verb rather than a `config harness` leaf: `config`
+    # edits the settings file and stops there, while this one reaches the
+    # network (or a checkout), writes into the shared store and moves an
+    # activation pointer. Putting a fetch behind `molmcp config` would make a
+    # settings edit and a fetch look like the same kind of act.
+    harness_cmd = commands.add_parser(
+        "harness",
+        help="Fetch and activate the harness sources this install names.",
+    )
+    harness_verbs = harness_cmd.add_subparsers(dest="harness_verb", required=True)
+    harness_sync = harness_verbs.add_parser(
+        "sync",
+        help="Resolve one named source's ref, publish that commit, activate it.",
+    )
+    _config_argument(harness_sync)
+    harness_sync.add_argument(
+        "name",
+        help=(
+            "The harness source to sync: its alias, or any accepted locator "
+            "spelling of its origin. No default: with several sources "
+            "configured, guessing one would fetch code the operator did "
+            "not ask for."
+        ),
+    )
+    harness_rollback = harness_verbs.add_parser(
+        "rollback",
+        help="Activate the commit this source's last sync displaced.",
+    )
+    _config_argument(harness_rollback)
+    harness_rollback.add_argument(
+        "name",
+        help=(
+            "The harness source to roll back: its alias, or any accepted "
+            "locator spelling of its origin. No default, for the reason "
+            "`sync` has none: with several sources configured, guessing "
+            "one would change what a plane serves without being asked."
+        ),
+    )
 
     cache = commands.add_parser(
         "cache",
@@ -178,6 +293,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--gc",
         action="store_true",
         help="Drop cached snapshots for sources that are no longer configured.",
+    )
+
+    # No flags, deliberately. There is one profile, so there is nothing to
+    # select; a required check with an off switch is not a required check.
+    commands.add_parser(
+        "gate",
+        help="Check the wiring contract this repository's required check runs.",
     )
 
     return parser
@@ -235,29 +357,39 @@ def _optional(values: list[str]) -> list[str] | None:
 
 
 def _serve(args: argparse.Namespace) -> int:
-    plane = args.plane.strip().lower()
-    known = known_plane_ids()
-    # Allow serving any discovered provider even if not in the static meta table.
-    if plane not in known and plane not in {p.name for p in _discover_safe()}:
-        raise ConfigurationError(
-            f"unknown plane {plane!r}. Run `molmcp planes` for the catalog."
+    plane_raw = args.plane
+    plane = plane_raw.strip().lower() if plane_raw else None
+    if plane in GONE_PLANE_IDS:
+        raise ConfigurationError(gone_plane_message(plane))
+    if plane is not None:
+        known = known_plane_ids()
+        if plane not in known and plane not in {p.name for p in _discover_safe()}:
+            raise ConfigurationError(
+                f"unknown plane {plane!r}. Run `molmcp planes` for the list."
+            )
+
+    config = None
+    try:
+        config = _load(args)
+    except (ConfigurationError, FileNotFoundError):
+        config = None
+
+    if plane is None:
+        server = create_stack(
+            config=config,
+            disable=args.disable or (),
+            discover_entry_points=not args.no_discover,
         )
-
-    config = _load(args) if plane == "molcrafts" else None
-    # Provider planes may still load config for HTTP auth settings.
-    if plane not in {"catalog", "molcrafts"}:
-        try:
-            config = _load(args)
-        except ConfigurationError:
-            config = None
-        except FileNotFoundError:
-            config = None
-
-    server = create_plane(
-        plane,
-        config=config,
-        discover_entry_points=not args.no_discover,
-    )
+    else:
+        if args.disable:
+            raise ConfigurationError(
+                "--disable applies to composed `molmcp serve` only"
+            )
+        server = create_plane(
+            plane,
+            config=config,
+            discover_entry_points=not args.no_discover,
+        )
     transport = args.transport or (
         config.server.transport if config is not None else "stdio"
     )
@@ -288,21 +420,23 @@ def _planes(args: argparse.Namespace) -> int:
     planes = [p.to_dict() for p in list_plane_infos()]
     payload = {
         "ok": True,
-        "model": "multi-plane-default-all",
+        "core": CORE_PLANE_ID,
+        "model": "molcrafts core + optional provider planes",
         "planes": planes,
         "hint": (
-            "Default: enable every plane in the client. "
-            "molmcp client grok                  # all on\n"
-            "molmcp client grok --disable molq   # all except molq\n"
-            "molmcp client grok --disable molq --enable molq  # re-enable"
+            "`molmcp serve` mounts enabled providers onto molcrafts. "
+            "Disable a mount with:\n"
+            "molmcp init grok --disable molq\n"
+            "molmcp init grok --disable molq --enable molq  # re-enable"
         ),
     }
     if args.json:
         _emit(payload)
         return 0
-    print("MolCrafts MCP planes (default: all enabled in client):\n")
+    print("MolCrafts MCP — molcrafts core (always on) + provider planes:\n")
     for row in planes:
-        print(f"  {row['id']:12}  {row['serve_command']}")
+        flag = "core" if not row.get("disableable", True) else "optional"
+        print(f"  {row['id']:12}  {row['serve_command']}  [{flag}]")
         print(f"               {row['purpose']}")
         print(f"               when: {row['when_to_connect']}")
         if row.get("tools_hint"):
@@ -317,29 +451,76 @@ def _route(args: argparse.Namespace) -> int:
     return 0
 
 
-def _client(args: argparse.Namespace) -> int:
-    toggle, text = render_client(
+def _init(args: argparse.Namespace) -> int:
+    """Wire one host: MCP JSON, usage skill, bundles, adapter, catalog components.
+
+    MCP (Model Context Protocol) is the wire protocol an AI client uses to
+    call tools, so the JSON written here is that client's list of servers to
+    launch. Every other destination belongs to :mod:`molmcp.host`, whose write
+    primitives are composed here in order rather than hidden behind a facade,
+    so each destination has exactly one visible writer.
+
+    ``--source`` is interpreted once, by ``resolve_bundle_source``, and it is
+    that resolved value — never the raw flag — that the three bundle
+    primitives receive. A checkout that is not a directory therefore fails
+    here instead of degrading silently to the packaged backend.
+
+    ``install_harness_components`` is the other origin — the commit a
+    ``molmcp harness sync`` activated, read down to the files its catalog
+    declares — and it comes **last** for a reason that is not cosmetic. The
+    placement seam keeps a catalog off the managed usage skill by *skipping*
+    any destination inside that directory, and skipping protects a file only
+    once it is there: run before ``install_skill``, the refusal would still
+    fire and the constitution would then be written over whatever the catalog
+    had put in its place.
+
+    Args:
+        args: Parsed ``init`` arguments: the host, the plane toggles
+            (``--enable`` / ``--disable``, a *plane* being one product's MCP
+            server), ``-o/--output``, and ``--source``.
+
+    Returns:
+        ``0`` once the MCP JSON, the usage skill, and the adapter are written,
+        along with whichever daily and dev files the resolved checkout
+        supplied — none of them when there is no checkout — and whichever
+        components the activated harness commits declared, none of them when
+        no configured source is synced.
+
+    Raises:
+        FileNotFoundError: If ``--source`` is not a directory, or if a harness
+            catalog declares a file its own published tree does not hold.
+        ValueError: If the host or a plane toggle is unknown, or if an
+            activated commit's catalog cannot be served.
+        ConfigurationError: If a harness source's pointer names a commit with
+            no published tree.
+    """
+    toggle, text = render_init(
         args.host,
         enable=args.enable,
         disable=args.disable,
     )
-    if args.output is not None:
-        path = args.output.expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        print(
-            f"wrote {path}  enabled={list(toggle.enabled)}  "
-            f"disabled={list(toggle.disabled)}",
-            file=sys.stderr,
-        )
-        return 0
-    # stderr summary so piping stdout stays clean
+    path = (
+        args.output.expanduser()
+        if args.output is not None
+        else default_write_path(args.host)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    skill_path = install_skill(args.host)
+    extra_paths = install_extra_skills(args.host)
+    adapter_path = write_adapter(args.host)
+    placed = install_harness_components(args.host)
+    extra_lines = "".join(f"wrote {p}\n" for p in extra_paths)
     print(
-        f"# enabled: {', '.join(toggle.enabled)}"
-        + (f"  # disabled: {', '.join(toggle.disabled)}" if toggle.disabled else ""),
+        f"wrote {path}  enabled={list(toggle.enabled)}  "
+        f"disabled={list(toggle.disabled)}\n"
+        f"wrote {skill_path}\n"
+        f"{extra_lines}"
+        f"wrote {adapter_path}\n"
+        f"placed {len(placed.installed)} harness catalog component file(s), "
+        f"{len(placed.skipped)} refused",
         file=sys.stderr,
     )
-    sys.stdout.write(text)
     return 0
 
 
@@ -412,6 +593,22 @@ def _config(args: argparse.Namespace) -> int:
     a plane server inherits its working directory from whichever MCP client
     launched it, so a project-scoped default would make configuration
     depend on an accident.
+
+    The branch chain is exhaustive by construction: an action with no
+    branch raises rather than falling through to ``remove_value``, which
+    would delete a setting nobody asked to delete.
+
+    Args:
+        args: The parsed ``config`` namespace, carrying ``config_action``
+            and whichever arguments that action's subparser declares.
+
+    Returns:
+        ``0`` once the read is printed or the write is on disk.
+
+    Raises:
+        ConfigurationError: If ``config_action`` names an action this
+            handler does not dispatch.
+        settings.SettingsError: If the settings layer refuses the write.
     """
     if args.config_action == "list":
         _emit(settings.load_settings(Path.cwd()).to_dict())
@@ -429,11 +626,139 @@ def _config(args: argparse.Namespace) -> int:
         settings.set_value(target, args.key, args.value)
     elif args.config_action == "add":
         settings.add_value(target, args.key, args.value)
-    else:
+    elif args.config_action == "harness":
+        _config_harness(args, target)
+    elif args.config_action == "remove":
         settings.remove_value(target, args.key, args.value)
+    else:
+        raise ConfigurationError(
+            f"unrecognized `molmcp config` action: {args.config_action!r}"
+        )
     print(f"wrote {target}", file=sys.stderr)
     _emit(settings.read_settings_file(target))
     return 0
+
+
+def _config_harness(args: argparse.Namespace, target: Path) -> None:
+    """Author one entry of the ``harness`` list, addressed by a locator.
+
+    The string verbs cannot reach this key — ``set`` refuses the bare
+    member of an object list and no dotted path into an entry exists — so
+    these two leaves are its only authoring route. They hold their own
+    branches here rather than inside :func:`_config` so that neither chain
+    has to nest.
+
+    A locator already in *target* whose ``--alias`` differs from the
+    stored name is renamed through
+    :func:`~molmcp.harness_sync.relocate_pointer`, so the activation
+    pointer follows. Every other write is
+    :func:`settings.set_harness_source`. This handler does not import
+    the locator parser or the pointer namer.
+
+    Args:
+        args: The parsed namespace, carrying ``harness_action`` and —
+            on the ``set`` leaf — ``locator``, ``alias``, ``enable`` and
+            ``disable``.
+        target: The settings file the scope flags selected.
+
+    Raises:
+        ConfigurationError: If ``harness_action`` names a leaf this
+            handler does not implement.
+        settings.SettingsError: If the settings layer refuses the write.
+    """
+    # Read as a bare attribute, never getattr(args, "harness_action", None):
+    # tests/test_cli_config.py::test_every_registered_config_action_is_dispatched
+    # calls _config(Namespace(config_action="harness")) with nothing else set and
+    # treats only ConfigurationError as "this action is unwired". A getattr default
+    # would fall through to the terminal raise below and report harness as unwired,
+    # turning a green drift guard red. The bare access raises AttributeError, which
+    # that test swallows by design.
+    if args.harness_action == "set":
+        locator = args.locator
+        alias = args.alias
+        enable = tuple(args.enable)
+        disable = tuple(args.disable)
+        matched = settings.match_harness_source(_harness_file_sources(target), locator)
+        if matched is not None and alias is not None and alias != matched.name:
+            relocate_pointer(
+                load_config(None),
+                target,
+                locator=locator,
+                name=alias,
+                enable=enable,
+                disable=disable,
+            )
+            return
+        settings.set_harness_source(
+            target,
+            locator,
+            alias=alias,
+            enable=enable,
+            disable=disable,
+        )
+        return
+    if args.harness_action == "remove":
+        settings.remove_harness_source(target, args.name)
+        return
+    raise ConfigurationError(
+        f"unrecognized `molmcp config harness` action: {args.harness_action!r}"
+    )
+
+
+def _harness_file_sources(path: Path) -> tuple[settings.HarnessSource, ...]:
+    """The ``harness`` entries stored in one settings file, or none."""
+    raw = settings.read_settings_file(path)
+    entries = raw.get("harness", [])
+    if not isinstance(entries, list):
+        return ()
+    return tuple(
+        settings.HarnessSource(**entry) for entry in entries if isinstance(entry, dict)
+    )
+
+
+def _harness(args: argparse.Namespace) -> int:
+    """Dispatch one ``molmcp harness`` verb and report what it did.
+
+    The work belongs to :mod:`molmcp.harness_sync` — :func:`~molmcp.
+    harness_sync.sync_source` forward along the pointer and
+    :func:`~molmcp.harness_sync.rollback_source` back along it; this handler
+    resolves the configuration, hands over the name, and turns the report into
+    lines. Every failure leaves here as an exception for ``main``'s single
+    funnel to render, so an operator of a half-configured install gets one
+    sentence rather than a traceback.
+
+    ``rollback`` prints no tree because it publishes none: it moves a pointer
+    onto a commit already in the store, so the pointer file and the commit are
+    the whole of what changed.
+
+    Args:
+        args: The parsed ``harness`` namespace, carrying ``harness_verb`` and
+            — on both leaves — ``name`` plus the standard ``--config`` /
+            ``--env`` pair.
+
+    Returns:
+        ``0`` once the pointer names the commit that was asked for.
+
+    Raises:
+        ConfigurationError: If ``harness_verb`` names a verb this handler does
+            not dispatch, or if the sync or rollback itself refuses the
+            request.
+    """
+    if args.harness_verb == "sync":
+        report = sync_source(_load(args), args.name)
+        state = "activated" if report.promoted else "already activated"
+        print(f"{report.source}: {report.sha} {state}")
+        print(f"  tree    {report.tree}")
+        print(f"  pointer {report.pointer}")
+        return 0
+    if args.harness_verb == "rollback":
+        rolled = rollback_source(_load(args), args.name)
+        print(f"{rolled.source}: rolled back to {rolled.sha}")
+        print(f"  pointer {rolled.pointer}")
+        return 0
+    raise ConfigurationError(
+        f"unrecognized `molmcp harness` verb: {args.harness_verb!r}"
+    )
 
 
 def _cache_hint(
@@ -467,9 +792,7 @@ def _cache(args: argparse.Namespace) -> int:
 
     vacuum_report: dict[str, Any] | None = None
     config = _load(args)
-    discovery = DiscoveryConfig(
-        cache_dir=config.cache_dir or DiscoveryConfig().cache_dir
-    )
+    discovery = DiscoveryConfig(cache_dir=resolved_cache_dir(config))
     gc_report: dict[str, Any] | None = None
     if args.gc:
         gc_report = SnapshotCache(discovery).collect_out_of_scope(
@@ -540,6 +863,33 @@ def _cache(args: argparse.Namespace) -> int:
     return 0
 
 
+def _gate(args: argparse.Namespace) -> int:
+    """Report whether the working directory's wiring contract still holds.
+
+    The verdict has one owner, :func:`molmcp.gate.run_gate`. This handler
+    reads ``ok`` off the report instead of re-deriving it from ``failed``:
+    two derivations of one verdict are two things that can later disagree
+    about the single required check. Each reported disagreement already
+    names its file and its offending token, so they are printed as handed
+    over rather than reworded here.
+
+    Args:
+        args: Parsed ``gate`` arguments. The subcommand carries no flags,
+            so nothing is read from it; it is taken to keep every handler
+            one shape.
+
+    Returns:
+        ``0`` when the report is ok, ``1`` otherwise.
+    """
+    report = run_gate(root=Path.cwd())
+    for message in report.failed:
+        print(f"molmcp: {message}", file=sys.stderr)
+    if report.ok:
+        print("wiring contract holds")
+        return 0
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments:
@@ -550,13 +900,15 @@ def main(argv: list[str] | None = None) -> int:
         "serve": _serve,
         "planes": _planes,
         "route": _route,
-        "client": _client,
+        "init": _init,
         "info": _info,
         "search": _search,
         "explore": _explore,
         "index": _index,
         "config": _config,
+        "harness": _harness,
         "cache": _cache,
+        "gate": _gate,
     }
     try:
         return handlers[args.command](args)
@@ -569,6 +921,15 @@ def main(argv: list[str] | None = None) -> int:
         # the CLI owes the user a sentence, not a traceback.
         sqlite3.Error,
         OSError,
+        # So is a ref that does not resolve or a repository that will not
+        # answer. GitError is registered here rather than converted at the
+        # verb that raised it, for two reasons: it is a RuntimeError, so it
+        # is caught by nothing above and would otherwise escape as a
+        # traceback; and its message already names the ref, the coordinate
+        # or the checkout root that git could not answer for, which a
+        # rewrite into ConfigurationError would replace with a guess about
+        # which of them was wrong.
+        GitError,
     ) as exc:
         print(f"molmcp: {exc}", file=sys.stderr)
         return 2

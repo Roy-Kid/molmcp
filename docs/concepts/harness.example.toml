@@ -1,0 +1,97 @@
+# Example harness catalog — documentation only.
+#
+# This file is called harness.example.toml on purpose, and it lives under
+# docs/ on purpose. Nothing loads it at run time. The file molmcp actually
+# reads is called harness.toml and sits at the root of one published commit
+# tree under the cache directory. See docs/concepts/harness.md.
+#
+# A publication record for this catalog would read:
+#
+#   repo   MolCrafts/harness
+#   sha    9f1c3b2a7d4e0165c8a9b3d27e5f10486c73ab92
+#   label  official
+#
+# Neither `sha` nor `label` is a key below, and neither can become one.
+# Identity is the commit SHA the caller hands to load_harness_catalog(); a
+# label is a note somebody keeps beside that commit. The grammar in
+# molmcp.components rejects every key it does not recognise, so writing
+# either of them here would stop this file parsing at all.
+
+# Capability tokens that every piece in this catalog needs from whatever
+# process loads it. Two are spellable today — `provider-sdk`, the public
+# molmcp.provider_sdk a checkout's provider is written against, and
+# `harness-catalog`, this file format. A token outside that pair is a
+# grammar error even for a process that would happily support it.
+requires = ["provider-sdk", "harness-catalog"]
+
+# Where this catalog's component paths begin, relative to the checkout root.
+# Optional; absent means the checkout root itself, which is what a repository
+# purpose-built as a catalog uses. A repository that carries its components
+# under a subdirectory names it here so the paths below stay canonical.
+component_root = "harness"
+
+# ---------------------------------------------------------------------------
+# Components — one installable piece each. `id` is not written here; it is
+# derived as "<kind>.<name>", which is why two rows may not share a kind and
+# a name. `path` is relative to this file and must start with the directory
+# the kind reserves: skills/, agents/, rules/, providers/, overlays/.
+# ---------------------------------------------------------------------------
+
+# A skill is an instruction file an agent reads before it starts working.
+[[component]]
+kind = "skill"
+name = "daily"
+path = "skills/daily/SKILL.md"
+
+# An agent is a definition of one specialised worker the host can dispatch to.
+[[component]]
+kind = "agent"
+name = "librarian"
+path = "agents/librarian/AGENT.md"
+
+# A rule is a constraint that holds across tasks.
+[[component]]
+kind = "rule"
+name = "no-invented-api"
+path = "rules/no-invented-api.md"
+
+# A provider is an MCP plane this checkout contributes. `entrypoint` is a
+# "module:object" string naming the class to import; the catalog loader
+# stores it and never imports it. Only provider and overlay rows may carry
+# one, and both must.
+[[component]]
+kind = "provider"
+name = "bench"
+path = "providers/bench/provider.py"
+entrypoint = "bench_provider:BenchProvider"
+
+# An overlay layers domain knowledge onto the code graph discovery builds.
+[[component]]
+kind = "overlay"
+name = "molpy"
+path = "overlays/molpy/overlay.py"
+entrypoint = "molpy_overlay:MolpyOverlay"
+
+# ---------------------------------------------------------------------------
+# Bundles — named groups of the component ids above. A bundle is written as
+# a `component` row whose kind is the literal "bundle"; it is not one of the
+# five component kinds and may not be a member of another bundle. Bundle
+# names are author-chosen; `daily` and `dev` here are examples, not a
+# language-gate pair.
+# ---------------------------------------------------------------------------
+
+[[component]]
+kind = "bundle"
+name = "sci"
+members = ["skill.daily", "rule.no-invented-api", "overlay.molpy"]
+
+[[component]]
+kind = "bundle"
+name = "dev"
+members = [
+    "skill.daily",
+    "agent.librarian",
+    "rule.no-invented-api",
+    "provider.bench",
+]
+requires = ["provider-sdk"]

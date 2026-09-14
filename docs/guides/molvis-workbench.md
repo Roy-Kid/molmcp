@@ -12,10 +12,13 @@ Two wills act on one session and neither blocks the other. The human's "change *
 
 ## The loop
 
-Connect the **molvis** plane (`molmcp serve molvis`). Tool ids are
-`molvis__open`, `molvis__exec`, … (server name + bare tool).
+Default `molmcp serve` mounts molvis onto the molcrafts core. Tool ids are
+`molvis_open`, `molvis_exec`, `molvis_poll_events` (FastMCP namespace).
+A debug `molmcp serve molvis` process still uses bare `open` / `exec`.
 
-`open` → `exec` (build and draw) → the human looks and clicks → `poll_events` → `exec` (read the selection, edit, redraw) → `close`.
+`molvis_open` → `molvis_exec` (build and draw) → the human looks and clicks →
+`molvis_poll_events` → `molvis_exec` (read the selection, edit, redraw) →
+`molvis_close`.
 
 Step one, once `open` has returned and the user has the viewer open in a browser: build the molecule and put it on the canvas. `stage` is already bound in the namespace; nothing else is imported for you.
 
@@ -71,6 +74,8 @@ Call `capabilities` instead of probing with `dir(stage)` and `inspect.signature`
 The full aspirin rehearsal — start the server, open, build, look, click, poll, edit, redraw, close, with a real browser and a real human in the middle — is an **out-of-tree** harness. It belongs in a sibling directory next to your molmcp checkout (`molvis-agent-e2e/`), never under the `molmcp/` or `molvis/` product trees, and specifically not in either project's `examples/` or `tests/`.
 
 The reason is honesty about what the thing is. An interactive dialogue script that needs a person to click a benzene ring is neither a runnable product example nor a CI test, and filing it as one advertises a guarantee no maintainer can keep. In-tree tests pin the workbench mechanics only: session lifecycle, namespace persistence, journal ordering under concurrent writes, and one round trip against real molvis over its in-process transport, no browser involved.
+
+**One word, two meanings.** The `molvis-agent-e2e/` playbook is a *test* harness in the ordinary English sense — a rig you drive a system with — and it is **not** the Git SHA plugin catalog documented in [Harness catalog](../concepts/harness.md). That other harness is a repository of agent tooling (skills, agents, rules, occasionally a plane) pinned by commit; this one is a directory of dialogue scripts, has no `harness.toml`, is registered nowhere, and is never activated by molmcp. Nothing in this section is an instruction to put the playbook in a harness commit.
 
 ## Read next
 

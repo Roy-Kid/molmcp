@@ -1,11 +1,11 @@
-"""Build one MCP plane server — never a multi-provider mega-server."""
+"""Build MCP servers — one focused FastMCP per plane, composed via mount."""
 
 from __future__ import annotations
 
 import hmac
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,7 +14,15 @@ from fastmcp.server.auth import AccessToken, TokenVerifier
 from mcp.types import ToolAnnotations
 
 from .collection import CollectionIndex
+from .components import ComponentKind
 from .config import AppConfig, load_config
+from .harness import (
+    Checkout,
+    activated_checkouts,
+    checkout_planes,
+    fold_components,
+    servable_sources,
+)
 from .mcp_provider import MolCraftsContextProvider
 from .middleware import (
     MissingAnnotationsError,
@@ -23,13 +31,22 @@ from .middleware import (
     assert_plane_tool_names,
     validate_tool_annotations,
 )
-from .planes import BUILTIN_PLANE_IDS, list_plane_infos, route_task
+from .planes import (
+    BUILTIN_PLANE_IDS,
+    CORE_PLANE_ID,
+    GONE_PLANE_IDS,
+    core_disable_message,
+    gone_plane_message,
+    list_plane_infos,
+    route_task,
+)
 from .provider import (
     PROVIDER_NAME_PATTERN,
     Provider,
     discover_providers,
 )
-from .runtime import build_collection
+from .runtime import _session_capability_overlays, build_collection
+from .settings import HarnessSource, load_settings
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +58,71 @@ _READ_ONLY = ToolAnnotations(
 )
 
 
+def _create_core_plane(
+    *,
+    collection: CollectionIndex | None,
+    config: AppConfig | str | Path | None,
+    extras: Sequence[object],
+    enable_path_safety: bool,
+    enable_response_limit: bool,
+    response_limit_bytes: int,
+    validate_annotations: bool,
+    instructions: str | None,
+) -> FastMCP:
+    """Assemble the ``molcrafts`` core plane and its collection lifespan.
+
+    The core is the one plane that owns a discovery collection rather than a
+    product's tools, so it is also the one that needs a lifespan: the
+    collection is opened when the server starts and closed when it stops, and
+    that ``finally`` is the only place either happens.
+
+    Args:
+        collection: Injected collection (tests, embedding). When ``None`` the
+            collection is built from *config*.
+        config: ``molcrafts.json`` path or :class:`~molmcp.config.AppConfig`.
+        extras: Session capability overlays concatenated after the entry-point
+            ones. Empty for a focused core plane.
+        enable_path_safety: Attach the path-safety middleware.
+        enable_response_limit: Attach the response-limit middleware.
+        response_limit_bytes: Ceiling that middleware enforces.
+        validate_annotations: Fail startup if a tool lacks ToolAnnotations.
+        instructions: Override the default core instructions.
+
+    Returns:
+        The core :class:`FastMCP` server, tools registered and validated.
+    """
+    app_config, coll = _resolve_collection(collection, config, extras=extras)
+    auth = _environment_auth(app_config) if app_config is not None else None
+
+    @asynccontextmanager
+    async def lifespan(_server):
+        coll.start()
+        try:
+            yield {}
+        finally:
+            coll.close()
+
+    runtime_status: dict[str, object] = {
+        "plane": CORE_PLANE_ID,
+        "transport": (
+            app_config.server.transport if app_config is not None else "injected"
+        ),
+    }
+    mcp = _base_server(
+        CORE_PLANE_ID,
+        instructions=instructions or _molcrafts_instructions(),
+        auth=auth,
+        lifespan=lifespan,
+        enable_path_safety=enable_path_safety,
+        enable_response_limit=enable_response_limit,
+        response_limit_bytes=response_limit_bytes,
+    )
+    MolCraftsContextProvider(coll, runtime_status).register(mcp)
+    _register_core_routing(mcp)
+    _validate(mcp, validate_annotations, plane_id=CORE_PLANE_ID)
+    return mcp
+
+
 def create_plane(
     plane: str,
     *,
@@ -49,6 +131,7 @@ def create_plane(
     provider: Provider | None = None,
     providers: Iterable[Provider] | None = None,
     discover_entry_points: bool = True,
+    extras: Sequence[object] = (),
     enable_path_safety: bool = True,
     enable_response_limit: bool = True,
     response_limit_bytes: int = 256 * 1024,
@@ -58,7 +141,7 @@ def create_plane(
     """Build a **single-plane** FastMCP server.
 
     Args:
-        plane: Plane id (``catalog``, ``molcrafts``, or a provider name such
+        plane: Plane id (``molcrafts`` core, or a provider name such
             as ``molvis``). This becomes the MCP server name clients see.
         collection: Injected discovery collection (tests / embedding).
             Required only for ``molcrafts`` when *config* is not used.
@@ -67,9 +150,17 @@ def create_plane(
             is built from it.
         provider: Explicit provider instance for provider planes (tests).
         providers: Deprecated alias for a single-item explicit provider list;
-            if more than one is passed, raises — multi-provider servers are gone.
+            if more than one is passed, raises — use :func:`create_stack`.
         discover_entry_points: Load the matching ``molmcp.providers`` entry
             point when *provider* is not injected.
+        extras: Capability overlays an activated harness checkout contributed.
+            A *capability overlay* is an object that layers domain knowledge
+            onto the code graph discovery builds, after that graph is
+            resolved; ``molmcp.discovery.overlay`` owns the protocol. These
+            are appended to the entry-point overlays when this call builds the
+            collection, and ignored when *collection* is injected — whoever
+            built that collection already chose its overlays. They stay opaque
+            here: naming their type would import discovery into this module.
         enable_path_safety / enable_response_limit / response_limit_bytes:
             Middleware toggles.
         validate_annotations: Fail startup if tools lack ToolAnnotations.
@@ -82,12 +173,14 @@ def create_plane(
     plane_id = plane.strip().lower()
     if not plane_id:
         raise ValueError("plane id must be non-empty")
+    if plane_id in GONE_PLANE_IDS:
+        raise ValueError(gone_plane_message(plane_id))
 
     if providers is not None:
         explicit_list = list(providers)
         if len(explicit_list) > 1:
             raise ValueError(
-                "multi-provider servers are removed; serve one plane per process"
+                "create_plane serves one plane; compose providers with create_stack"
             )
         if provider is not None and explicit_list:
             raise ValueError("pass provider= or providers=[one], not both")
@@ -102,50 +195,17 @@ def create_plane(
             f"serve {getattr(provider, 'name', 'it')!r} as its own plane"
         )
 
-    if plane_id == "catalog":
-        mcp = _base_server(
-            plane_id,
-            instructions=instructions or _catalog_instructions(),
-            auth=None,
-            lifespan=None,
+    if plane_id == CORE_PLANE_ID:
+        return _create_core_plane(
+            collection=collection,
+            config=config,
+            extras=extras,
             enable_path_safety=enable_path_safety,
             enable_response_limit=enable_response_limit,
             response_limit_bytes=response_limit_bytes,
+            validate_annotations=validate_annotations,
+            instructions=instructions,
         )
-        _register_catalog(mcp)
-        _validate(mcp, validate_annotations, plane_id=plane_id)
-        return mcp
-
-    if plane_id == "molcrafts":
-        app_config, coll = _resolve_collection(collection, config)
-        auth = _environment_auth(app_config) if app_config is not None else None
-
-        @asynccontextmanager
-        async def lifespan(_server):
-            coll.start()
-            try:
-                yield {}
-            finally:
-                coll.close()
-
-        runtime_status: dict[str, object] = {
-            "plane": plane_id,
-            "transport": (
-                app_config.server.transport if app_config is not None else "injected"
-            ),
-        }
-        mcp = _base_server(
-            plane_id,
-            instructions=instructions or _molcrafts_instructions(),
-            auth=auth,
-            lifespan=lifespan,
-            enable_path_safety=enable_path_safety,
-            enable_response_limit=enable_response_limit,
-            response_limit_bytes=response_limit_bytes,
-        )
-        MolCraftsContextProvider(coll, runtime_status).register(mcp)
-        _validate(mcp, validate_annotations, plane_id=plane_id)
-        return mcp
 
     # Provider plane — one product, bare tool names, server name = plane id.
     resolved = _resolve_provider(
@@ -176,6 +236,197 @@ def create_plane(
     return mcp
 
 
+def create_stack(
+    *,
+    collection: CollectionIndex | None = None,
+    config: AppConfig | str | Path | None = None,
+    providers: Iterable[Provider] | None = None,
+    disable: Iterable[str] = (),
+    discover_entry_points: bool = True,
+    enable_path_safety: bool = True,
+    enable_response_limit: bool = True,
+    response_limit_bytes: int = 256 * 1024,
+    validate_annotations: bool = True,
+    instructions: str | None = None,
+) -> FastMCP:
+    """Build the molcrafts core and mount enabled providers (FastMCP composition).
+
+    Provider tools are namespaced with the plane id (``molvis_open``). Core
+    tools stay bare (``packages``, ``open``, ``route``). ``molcrafts`` cannot
+    be disabled.
+
+    This is also the only composition root the activated harness checkouts
+    reach — one commit per named harness source (see
+    :data:`molmcp.harness.SUPPORTED_CAPABILITIES`), already unpacked under
+    the cache directory. It has two arms, each with an owner: the *overlay*
+    arm builds the collection (it runs when *collection* is not injected),
+    the *provider* arm enumerates planes (it runs when *providers* is not
+    injected and entry-point discovery is on). Injecting one arm's answer
+    skips that arm and only that arm. Injecting both means the caller has
+    answered everything, so the harness sources are never even read.
+
+    An arm that would reach for a checkout reads
+    :func:`~molmcp.settings.load_settings` once and validates every named
+    source. An empty list — no source named at all — serves exactly as this
+    did before the harness existed; an entry missing a coordinate is a
+    :class:`~molmcp.config.ConfigurationError` rather than a guess at the
+    missing half, and no entry is skipped in favour of the next.
+
+    Every activated source contributes, and each arm folds them itself
+    (:func:`molmcp.harness.fold_components`): components are taken in the
+    order the ``harness`` settings list names their sources, and a component
+    id two sources both declare is kept once, from the earlier entry, with the
+    later one reported. For a provider that id *is* a plane name, so the fold
+    is also what keeps two sources' ``provider.demo`` from mounting twice
+    under one namespace — and the folded name set, not the first catalog, is
+    what entry-point planes are XORed against.
+
+    Args:
+        collection: Injected discovery collection. Supplying one answers the
+            overlay arm: nothing is built here, so no checkout overlay is
+            loaded — whoever built that collection already chose its overlays.
+        config: ``molcrafts.json`` path or :class:`AppConfig`, used for the
+            core plane and passed on to every plane mounted under it.
+        providers: Explicit planes to mount. Supplying them answers the
+            provider arm: entry points are not enumerated and the checkout
+            contributes no plane. They are still filtered by *disable*.
+        disable: Plane ids to leave unmounted. ``molcrafts`` may not be one of
+            them, and a retired plane id is refused rather than ignored.
+        discover_entry_points: Enumerate ``molmcp.providers`` entry points
+            when *providers* is not injected. ``False`` with no injected
+            providers mounts nothing — it is not a checkout-only mode.
+        enable_path_safety / enable_response_limit / response_limit_bytes:
+            Middleware toggles, applied to every plane this builds.
+        validate_annotations: Fail startup if tools lack ToolAnnotations.
+        instructions: Override the composed core's instructions string;
+            mounted planes keep their own.
+
+    Returns:
+        The core server, with every enabled plane already mounted on it.
+
+    Raises:
+        ValueError: ``molcrafts`` was disabled, or a retired plane was named.
+        ConfigurationError: A named harness source cannot be served. Four
+            ways: an entry is missing a coordinate; an entry's ``name`` cannot
+            name that source's activation pointer file, because it is empty,
+            reserved, absolute or carries a path separator (see
+            :func:`molmcp.harness.pointer_path`); two entries share a name,
+            compared case-insensitively because both spellings resolve to one
+            pointer file on darwin and on Windows; or a source's activated
+            commit has no tree on disk. A ``ValueError`` subclass, as are
+            ``CatalogError`` and ``OverlayLoadError``.
+        CatalogError: A checkout's ``harness.toml`` failed the catalog
+            grammar, or asks for a capability token this runtime does not
+            implement — see :func:`~molmcp.components.load_harness_catalog`.
+            The fold raises it too, and not only about a file: a
+            :class:`~molmcp.harness.ComponentFold` whose checkouts and
+            ``component_root`` strings disagree cannot be built, and
+            :meth:`~molmcp.harness.ComponentFold.root_for` refuses a source
+            the fold was never given rather than answering with some other
+            source's base. Raised out of either arm. One bad catalog fails
+            the serve rather than being skipped in favour of its neighbours.
+        OverlayLoadError: A checkout overlay component's factory returned
+            something that is not a capability overlay — see
+            ``molmcp.runtime._session_capability_overlays``.
+        ActivationVersionError: A source's activation pointer file exists but
+            is not a version-1 record. Alone among these it is *not* a
+            ``ValueError``: a pointer this process cannot parse is not a
+            configuration mistake it could serve without.
+    """
+    skipped = {str(name).strip().lower() for name in disable if str(name).strip()}
+    if CORE_PLANE_ID in skipped:
+        raise ValueError(core_disable_message())
+    for name in skipped:
+        if name in GONE_PLANE_IDS:
+            raise ValueError(gone_plane_message(name))
+
+    build_overlays = collection is None
+    enumerate_planes = providers is None and discover_entry_points
+    plane_config: AppConfig | str | Path | None = config
+    checkouts: tuple[Checkout, ...] = ()
+    if (build_overlays or enumerate_planes) and (sources := _harness_locator()):
+        # Resolving here rather than in activated_checkouts keeps the cache
+        # root the *same* already-resolved root the collection indexes under.
+        plane_config = _resolve_config(config)
+        checkouts = activated_checkouts(plane_config, sources)
+
+    extras: tuple[object, ...] = ()
+    if build_overlays and checkouts:
+        # ``_session_capability_overlays`` resolves each seed's import root
+        # under one base, so N checkouts is N calls concatenated in source
+        # order — not one call over a flattened spec list, which would resolve
+        # the second source's seeds under the first source's base. The base is
+        # the fold's answer rather than the checkout tree: a catalog may
+        # declare a ``component_root``, and the provider arm asks the same
+        # question of the same object, so neither arm can be the one that
+        # forgot.
+        overlay_fold = fold_components(checkouts, ComponentKind.OVERLAY)
+        extras = tuple(
+            overlay
+            for checkout in overlay_fold.checkouts
+            for overlay in _session_capability_overlays(
+                overlay_fold.specs_from(checkout.source),
+                overlay_fold.root_for(checkout.source),
+            )
+        )
+
+    parent = create_plane(
+        CORE_PLANE_ID,
+        collection=collection,
+        config=plane_config,
+        extras=extras,
+        discover_entry_points=False,
+        enable_path_safety=enable_path_safety,
+        enable_response_limit=enable_response_limit,
+        response_limit_bytes=response_limit_bytes,
+        validate_annotations=validate_annotations,
+        instructions=instructions or _stack_instructions(),
+    )
+    if providers is not None:
+        mounted: list[Provider] = [p for p in providers if p.name not in skipped]
+    elif not enumerate_planes:
+        mounted = []
+    else:
+        provider_fold = fold_components(checkouts, ComponentKind.PROVIDER)
+        workers = checkout_planes(provider_fold)
+        # The exclusion set is an *output of the fold*, not a set built back
+        # out of the constructed workers: a contested ``provider.demo`` is
+        # kept once, so the name it claims against the entry points is claimed
+        # once, whichever source won it.
+        from_checkout = provider_fold.names
+        # One enumeration, and the same one this arm has always used.
+        # ``only_available=True`` drops a plane whose optional upstream
+        # package is not installed — precisely the plane a checkout is there
+        # to supply — and enumerating twice would construct every entry-point
+        # provider class a second time on every serve.
+        mounted = [
+            p
+            for p in (
+                *workers,
+                *(
+                    plane
+                    for plane in discover_providers(only_available=True)
+                    if plane.name not in from_checkout
+                ),
+            )
+            if p.name not in skipped
+        ]
+
+    for provider in mounted:
+        child = create_plane(
+            provider.name,
+            provider=provider,
+            config=plane_config,
+            discover_entry_points=False,
+            enable_path_safety=enable_path_safety,
+            enable_response_limit=enable_response_limit,
+            response_limit_bytes=response_limit_bytes,
+            validate_annotations=validate_annotations,
+        )
+        parent.mount(child, namespace=provider.name)
+    return parent
+
+
 def create_server(
     name: str | None = None,
     *,
@@ -189,9 +440,7 @@ def create_server(
     """
     plane_id = plane or name
     if plane_id is None:
-        raise ValueError("create_plane requires plane= (or legacy name=)")
-    # Strip kwargs that only applied to the mega-server.
-    kwargs.pop("provider_names", None)
+        raise ValueError("create_plane requires plane=")
     return create_plane(plane_id, **kwargs)
 
 
@@ -216,44 +465,104 @@ def _base_server(
     return mcp
 
 
-def _register_catalog(mcp: FastMCP) -> None:
+def _register_core_routing(mcp: FastMCP) -> None:
     @mcp.tool(annotations=_READ_ONLY)
     def list_planes() -> dict[str, object]:
-        """List MCP planes this install can serve (connect only what you need).
+        """List the core connection and optional provider planes.
 
-        Each row has ``id``, ``serve_command``, ``when_to_connect``, and
-        ``tools_hint``. There is no mega-server — one process per plane.
+        Each row has ``id``, ``serve_command``, ``when_to_connect``,
+        ``tools_hint``, and ``disableable``. molcrafts is always on;
+        only provider planes can be dropped from a client config.
         """
         planes = [p.to_dict() for p in list_plane_infos()]
         return {
             "ok": True,
             "planes": planes,
-            "model": "multi-link-on-demand",
+            "core": CORE_PLANE_ID,
+            "model": "molcrafts core + optional provider planes",
             "hint": (
-                "Configure separate MCP server entries per plane. "
-                "Start with catalog + the planes route() returns."
+                "Default `molmcp serve` mounts enabled providers onto this "
+                "core (FastMCP namespace: molvis_open). "
+                "Drop a mount with `molmcp init <host> --disable <plane>`."
             ),
         }
 
     @mcp.tool(annotations=_READ_ONLY)
     def route(task: str) -> dict[str, object]:
-        """Which plane(s) to connect for *task* (routing only — no science).
+        """Which optional provider plane(s) to connect for *task*.
 
-        Returns plane ids and ``molmcp serve <id>`` commands. Connect those
-        MCP links on demand; do not invent domain MCP tools for chemistry APIs.
+        Routing only — no science. molcrafts is already this connection.
+        Do not invent domain MCP tools for chemistry APIs.
         """
         return route_task(task)
+
+
+def _resolve_config(config: AppConfig | str | Path | None) -> AppConfig:
+    """Accept either an already-resolved config or something to load one from.
+
+    Resolution is this module's job and stays here. :mod:`molmcp.harness` takes
+    an :class:`AppConfig` already resolved, so that the harness store and its
+    pointers land under the very same cache root the collection indexes under
+    rather than under a root a second resolution might disagree about.
+
+    Args:
+        config: An :class:`AppConfig`, or anything
+            :func:`~molmcp.config.load_config` accepts.
+
+    Returns:
+        The configuration, resolved.
+    """
+    if isinstance(config, AppConfig):
+        return config
+    return load_config(config)
 
 
 def _resolve_collection(
     collection: CollectionIndex | None,
     config: AppConfig | str | Path | None,
+    *,
+    extras: Sequence[object] = (),
 ) -> tuple[AppConfig | None, CollectionIndex]:
     if collection is not None:
         app_config = _resolve_config(config) if config is not None else None
         return app_config, collection
     app_config = _resolve_config(config)
-    return app_config, build_collection(app_config)
+    return app_config, build_collection(app_config, extras=extras)
+
+
+def _harness_locator() -> tuple[HarnessSource, ...]:
+    """Read every named harness source, in the order the settings list them.
+
+    Settings are read once per ``create_stack``, rooted at the working
+    directory the way every other caller reads them: a bare ``load_settings()``
+    would hide a project's ``.molmcp/settings.json`` layer, so a source split
+    across the user and project files would look incomplete and be rejected.
+
+    Reading the file is this function's whole job; which entries are servable
+    is :func:`~molmcp.harness.servable_sources`', so that ``molmcp harness
+    sync`` can apply the identical rule to the one entry it was named. The
+    split is what keeps the two commands from drifting: an entry this refuses
+    cannot be one that verb syncs.
+
+    Returns:
+        Every named source in file order, each naming an origin this install
+        can reach — a GitHub coordinate or a checkout on disk — or the empty
+        tuple when no source is named, which is the un-harnessed
+        configuration rather than a failure. File order is carried through
+        :func:`~molmcp.harness.activated_checkouts` into the fold, so it is
+        the operator's priority control over a component two sources both
+        declare. Only ``name`` is read past this point: it selects that
+        source's activation pointer, which is where the commit to serve comes
+        from. The origin fields identify the repository to whatever later
+        fetches from it, and nothing downstream of here reads their values.
+
+    Raises:
+        ConfigurationError: An entry names no origin this install can reach.
+            See :func:`~molmcp.harness.assert_servable` for the GitHub
+            locator (complete without a ref) and the local checkout that
+            qualify, and what each message says.
+    """
+    return servable_sources(load_settings(Path.cwd()).harness)
 
 
 def _resolve_provider(
@@ -292,12 +601,6 @@ def _resolve_provider(
     return found[plane_id]
 
 
-def _resolve_config(config: AppConfig | str | Path | None) -> AppConfig:
-    if isinstance(config, AppConfig):
-        return config
-    return load_config(config)
-
-
 def _validate(
     mcp: FastMCP,
     validate_annotations: bool,
@@ -315,27 +618,31 @@ def _validate(
         )
 
 
-def _catalog_instructions() -> str:
+def _molcrafts_instructions() -> str:
     return (
-        "MolCrafts MCP catalog plane — multi-link on-demand bootstrap.\n"
-        "1) list_planes — which product planes exist and how to serve them\n"
-        "2) route(task) — which plane(s) to connect for a user task\n"
-        "Connect only those MCP servers. Science APIs are never tools here; "
-        "use the molcrafts plane to discover symbols, molvis to draw, etc."
+        "MolCrafts knowledge core. Discover real symbols before coding.\n"
+        "1) list_planes — which provider mounts exist\n"
+        "2) route(task) — which provider namespace a task needs\n"
+        "3) packages — package directory; choose sources\n"
+        "4) outline(source, path?) — module tree\n"
+        "5) open(ref) — symbol page before coding\n"
+        "6) compose(task|refs) — budgeted multi-page pack\n"
+        "search/suggest are index helpers. "
+        "ok=false / SYMBOL_NOT_FOUND → capability gap: report the step, "
+        "the package/ref, and the result; do not invent the API.\n"
+        "knowledgeScope scopes packages/outline/open/search/compose. "
+        "Science APIs are never tools; invoke them in agent Python "
+        "or via the namespaced molvis tools."
     )
 
 
-def _molcrafts_instructions() -> str:
+def _stack_instructions() -> str:
     return (
-        "MolCrafts knowledge plane (OKF-style pages). "
-        "Codegraph is an index — do not treat scores as truth.\n"
-        "1) packages — package directory; choose sources\n"
-        "2) outline(source, path?) — module tree\n"
-        "3) open(ref) — symbol page before coding\n"
-        "4) compose(task|refs) — budgeted multi-page pack\n"
-        "search/suggest are index helpers. "
-        "ok=false / SYMBOL_NOT_FOUND → do not invent the API.\n"
-        "knowledgeScope scopes packages/outline/open/search/compose."
+        _molcrafts_instructions()
+        + "\nDefault serve mounts providers with FastMCP namespaces "
+        "(molvis_open, molq_list_jobs, molexp_list_projects). "
+        "`molmcp init <host> --disable <plane>` omits a mount. "
+        "If these tools are missing, tell the user to install or start molmcp."
     )
 
 
@@ -346,7 +653,8 @@ def _provider_instructions(plane_id: str) -> str:
         "Do not expect science methods as MCP tools; discover them on the "
         "molcrafts plane and invoke via agent Python or molvis exec.\n"
         f"Server name is '{plane_id}' so client tool ids look like "
-        f"'{plane_id}__<tool>'."
+        f"'{plane_id}__<tool>'. On the composed core they appear as "
+        f"'{plane_id}_<tool>' (FastMCP namespace)."
     )
 
 
@@ -380,4 +688,4 @@ def _environment_auth(config: AppConfig) -> TokenVerifier | None:
     return _EnvironmentTokenVerifier(environment_name)
 
 
-__all__ = ["create_plane", "create_server"]
+__all__ = ["create_plane", "create_server", "create_stack"]

@@ -1,0 +1,99 @@
+"""Stdlib shared leaf: harness catalog types and GitHub HTTP transport.
+
+This package is not a new architecture layer. Outer and inner modules
+import it; it imports only the standard library (plus relative siblings).
+It is not re-exported from :mod:`molmcp`.
+
+The catalog half reads one checkout's ``harness.toml`` into frozen types.
+A *harness catalog* lists installable pieces and named groups of those
+pieces. Identity is the commit *SHA* (Secure Hash Algorithm fingerprint:
+40 lowercase hex characters) the caller passes in; the TOML file must
+not contain a ``sha`` key. Catalog loading does not inspect git.
+
+Two catalog checks, in order, and they are not the same:
+
+* *Language gate* — the file must match the catalog grammar (known
+  keys, known kinds, ``requires`` tokens drawn only from
+  ``ALLOWED_REQUIRES``).
+* *Eligibility* — every ``requires`` token that survived the language
+  gate must also be one the caller currently supports
+  (``supported_capabilities``). An unknown token still fails the
+  language gate even if the caller listed it as supported.
+
+A *component* is one installable piece. ``ComponentKind`` is the enum
+of the five kinds (``skill``, ``agent``, ``rule``, ``provider``,
+``overlay``). A *bundle* is a named grouping of component ids; it is
+not a ``ComponentKind``. An *entrypoint* is a ``module:object`` string
+stored for a later import; this package never imports it.
+
+The git half is :class:`GitTransport` with its two implementations plus
+:func:`extract_git_archive`. :class:`GitHubTransport` reaches a coordinate
+over stdlib ``urllib``, with an optional GitHub personal access token the
+caller supplies; :class:`LocalGitTransport` reaches a checkout already on
+disk by running ``git`` there, and opens no socket. This package never
+reads the environment.
+
+The store half is :class:`ImmutableGitStore`. A *SHA directory* is
+``<root>/commits/<sha>/`` with ``metadata.json`` plus ``tree/``.
+*Flatten the inner tree* means installing the tarball's single
+top-level directory (what :func:`extract_git_archive` returns) as that
+``tree/``, so ``harness.toml`` sits at the catalog root, not under
+``<repo>-<sha>/``.
+
+The activation half is :class:`Activation`. :meth:`Activation.bind` is
+the only constructor: it loads the pointer file or an empty in-memory
+record and does not write. The pointer names three published SHAs —
+*current*, *staged*, and *previous*. ``IneligibleShaError`` is
+``stage`` refusing a SHA that has no complete tree or whose catalog
+the caller cannot honor.
+"""
+
+from .activate import Activation
+from .catalog import HarnessCatalog, ResolvedBundle, load_harness_catalog
+from .git import (
+    GitError,
+    GitHubTransport,
+    GitTransport,
+    LocalGitTransport,
+    extract_git_archive,
+)
+from .models import (
+    ALLOWED_REQUIRES,
+    COMPONENT_NAME_PATTERN,
+    KIND_PATH_PREFIX,
+    SHA_PATTERN,
+    BundleSpec,
+    CatalogError,
+    ComponentKind,
+    ComponentSpec,
+)
+from .store import (
+    ImmutableGitStore,
+    ShaConflictError,
+    StoreError,
+    UnknownShaError,
+)
+
+__all__ = [
+    "ALLOWED_REQUIRES",
+    "Activation",
+    "BundleSpec",
+    "COMPONENT_NAME_PATTERN",
+    "CatalogError",
+    "ComponentKind",
+    "ComponentSpec",
+    "GitError",
+    "GitHubTransport",
+    "GitTransport",
+    "HarnessCatalog",
+    "ImmutableGitStore",
+    "KIND_PATH_PREFIX",
+    "LocalGitTransport",
+    "ResolvedBundle",
+    "SHA_PATTERN",
+    "ShaConflictError",
+    "StoreError",
+    "UnknownShaError",
+    "extract_git_archive",
+    "load_harness_catalog",
+]

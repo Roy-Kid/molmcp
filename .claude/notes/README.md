@@ -9,3 +9,6 @@ in `.claude/specs/`).
   consumed by the `librarian` agent during `/mol:spec`
 - `open-questions.md` — uncertainties recorded during bootstrap or
   later; resolve and prune over time
+- `harness-contract.md` — the two long-lived harness rules: `MolCrafts/harness`
+  is a new empty repository (not `molcrafts-harness` renamed), and identity is
+  a Git SHA
